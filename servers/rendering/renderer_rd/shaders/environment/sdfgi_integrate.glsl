@@ -412,17 +412,23 @@ void main() {
 	vec3 irradiance = vec3(0.0);
 	vec3 radiance = vec3(0.0);
 
+	// Load all the coefficients first, then sum them in a separate loop.
+	// Loading and adding to both sums in the same loop is miscompiled by Intel's
+	// shader compiler (Arc 140V, Vulkan and D3D12): radiance comes out many times
+	// too bright, so SDFGI reflections make surfaces glow white.
+	vec3 sh_light[SH_SIZE];
 	for (uint i = 0; i < SH_SIZE; i++) {
-		// store in history texture
 		ivec2 average_pos = sh_pos + ivec2(0, i);
 		ivec4 average = imageLoad(lightprobe_average_texture, average_pos);
 
 		vec4 sh = (vec4(average) / float(params.history_size)) / float(1 << HISTORY_BITS);
 
-		vec3 m = sh.rgb * c[i] * 4.0;
+		sh_light[i] = sh.rgb * c[i] * 4.0;
+	}
 
-		irradiance += m * l_mult[i];
-		radiance += m;
+	for (uint i = 0; i < SH_SIZE; i++) {
+		irradiance += sh_light[i] * l_mult[i];
+		radiance += sh_light[i];
 	}
 
 	//encode RGBE9995 for the final texture
