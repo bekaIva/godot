@@ -182,6 +182,7 @@ env.drivers_sources += thirdparty_obj
 
 driver_obj = []
 env_d3d12_rdd.add_source_files(driver_obj, "*.cpp")
+env_d3d12_rdd.add_source_files(driver_obj, "*.c")
 env.drivers_sources += driver_obj
 
 # Needed to force rebuilding the driver files when the thirdparty code is updated.
