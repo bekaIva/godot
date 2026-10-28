@@ -31,6 +31,7 @@
 #include "rendering_shader_container_d3d12.h"
 
 #include "core/templates/sort_array.h"
+#include "drivers/d3d12/d3d12_nir_constant_arrays.h"
 #include "drivers/d3d12/dxil_hash.h"
 
 #include <drivers/d3d12/godot_d3d12ma.h>
@@ -383,6 +384,8 @@ bool RenderingShaderContainerD3D12::_convert_spirv_to_nir(Span<ReflectShaderStag
 		}
 
 		dxil_spirv_nir_prep(shader);
+		// Keep constant arrays out of per-thread memory (see d3d12_nir_constant_arrays.c).
+		godot_nir_lower_constant_arrays_to_global(shader);
 		dxil_spirv_metadata dxil_metadata = {};
 		dxil_spirv_nir_passes(shader, &dxil_runtime_conf, &dxil_metadata);
 
