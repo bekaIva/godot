@@ -28,6 +28,13 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
+// SCsub defines `_Static_assert` as `static_assert` for the C++ files that include Mesa's headers.
+// This is the only C file there, and in C `_Static_assert` is the keyword itself: with GCC and Clang
+// the define leaves Mesa's `static_assert` undeclared (MinGW builds fail), so undo it here.
+#if defined(__GNUC__) && !defined(__cplusplus)
+#undef _Static_assert
+#endif
+
 #include "d3d12_nir_constant_arrays.h"
 
 #include "nir.h"
