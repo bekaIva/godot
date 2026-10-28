@@ -433,7 +433,13 @@ half sample_directional_soft_shadow(texture2D shadow, vec3 pssm_coord, vec2 tex_
 	if (blocker_count > 0.0) {
 		//blockers found, do soft shadow
 		blocker_average /= blocker_count;
-		float penumbra = (-pssm_coord.z + blocker_average) / (1.0 - blocker_average);
+		// A directional light's penumbra grows with the blocker-receiver distance only:
+		// width = (receiver - blocker) * tan(angle). tex_scale is the width for a blocker at
+		// the shadow camera's near plane (receiver distance from it * angle), so scale it by
+		// the share of that distance the blocker leaves (depth is 1 at the near plane).
+		// Dividing by the blocker's own distance from the near plane instead (a point light
+		// there) overestimated it, without bound for casters pancaked onto that plane.
+		float penumbra = (-pssm_coord.z + blocker_average) / max(1.0 - pssm_coord.z, 1e-6);
 		tex_scale *= penumbra;
 
 		float s = 0.0;
