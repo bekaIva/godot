@@ -133,8 +133,8 @@ void populate_group_shared_memory(uvec2 group_id, uint group_index) {
 		store_color_depth(group_thread_id_4, group_top_left + group_thread_id_4);
 	}
 
-	// Wait for group threads to load store data.
-	groupMemoryBarrier();
+	// Wait for group threads to load store data. Only the shared tile needs ordering.
+	memoryBarrierShared();
 	barrier();
 }
 
