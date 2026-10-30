@@ -2847,6 +2847,9 @@
 		<constant name="SUPPORTS_HDR_OUTPUT" value="13" enum="Features">
 			Support for high dynamic range (HDR) output.
 		</constant>
+		<constant name="SUPPORTS_XESS" value="14" enum="Features">
+			Support for Intel XeSS super resolution ([constant Viewport.SCALING_3D_MODE_XESS]): the Direct3D 12 or Vulkan driver on Windows x86_64, with [code]libxess.dll[/code] found and a GPU XeSS can run on.
+		</constant>
 		<constant name="LIMIT_MAX_BOUND_UNIFORM_SETS" value="0" enum="Limit">
 			Maximum number of uniform sets that can be bound at a given time.
 		</constant>

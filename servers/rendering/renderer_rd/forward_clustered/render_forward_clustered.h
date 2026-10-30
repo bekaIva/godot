@@ -45,6 +45,9 @@
 #ifdef METAL_ENABLED
 #include "servers/rendering/renderer_rd/effects/metal_fx.h"
 #endif
+#ifdef XESS_ENABLED
+#include "servers/rendering/renderer_rd/effects/xess.h"
+#endif
 
 #define RB_SCOPE_FORWARD_CLUSTERED SNAME("forward_clustered")
 
@@ -99,6 +102,10 @@ public:
 #ifdef METAL_MFXTEMPORAL_ENABLED
 		RendererRD::MFXTemporalContext *mfx_temporal_context = nullptr;
 #endif
+#ifdef XESS_ENABLED
+		RendererRD::XeSSEffect *xess_effect = nullptr;
+		RendererRD::XeSSContext *xess_context = nullptr;
+#endif
 
 	public:
 		ClusterBuilderRD *cluster_builder = nullptr;
@@ -148,6 +155,11 @@ public:
 #ifdef METAL_MFXTEMPORAL_ENABLED
 		bool ensure_mfx_temporal(RendererRD::MFXTemporalEffect *p_effect);
 		RendererRD::MFXTemporalContext *get_mfx_temporal_context() const { return mfx_temporal_context; }
+#endif
+
+#ifdef XESS_ENABLED
+		void ensure_xess(RendererRD::XeSSEffect *p_effect);
+		RendererRD::XeSSContext *get_xess_context() const { return xess_context; }
 #endif
 
 		RID get_color_only_fb();
@@ -748,6 +760,9 @@ private:
 
 #ifdef METAL_MFXTEMPORAL_ENABLED
 	RendererRD::MFXTemporalEffect *mfx_temporal_effect = nullptr;
+#endif
+#ifdef XESS_ENABLED
+	RendererRD::XeSSEffect *xess_effect = nullptr;
 #endif
 	RendererRD::MotionVectorsStore *motion_vectors_store = nullptr;
 

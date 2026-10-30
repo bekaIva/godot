@@ -17,6 +17,9 @@ req_version_minor = 3
 Import("env")
 env_d3d12_rdd = env.Clone()
 
+# Intel XeSS headers (the library is loaded at run time, drivers/xess).
+env_d3d12_rdd.Prepend(CPPPATH=["#thirdparty/xess"])
+
 # Agility SDK.
 if env["agility_sdk_path"] != "" and os.path.exists(env["agility_sdk_path"]):
     env_d3d12_rdd.Append(CPPDEFINES=["AGILITY_SDK_ENABLED"])

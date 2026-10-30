@@ -891,6 +891,22 @@ public:
 	virtual void command_begin_label(CommandBufferID p_cmd_buffer, const char *p_label_name, const Color &p_color) override final;
 	virtual void command_end_label(CommandBufferID p_cmd_buffer) override final;
 
+	/**************/
+	/**** XESS ****/
+	/**************/
+
+#ifdef XESS_ENABLED
+private:
+	int8_t xess_support = -1; // Unknown until has_feature(SUPPORTS_XESS) is asked.
+	bool _xess_is_supported();
+	void _xess_transition(CommandBufferInfo *p_cmd_buf_info, TextureInfo *p_texture, D3D12_RESOURCE_STATES p_state);
+
+public:
+	virtual void *xess_context_create(const XeSSContextCreateInfo &p_info) override final;
+	virtual void xess_context_free(void *p_context) override final;
+	virtual void command_xess_execute(CommandBufferID p_cmd_buffer, void *p_context, const XeSSExecuteInfo &p_info) override final;
+#endif
+
 	/****************/
 	/**** DEBUG *****/
 	/****************/

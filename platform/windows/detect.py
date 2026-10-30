@@ -505,6 +505,10 @@ def configure_msvc(env: "SConsEnvironment"):
         if not env["use_volk"]:
             LIBS += ["vulkan"]
 
+    # Intel XeSS, loaded from libxess.dll at run time (drivers/xess); Intel ships it for x86_64 only.
+    if (env["vulkan"] or env["d3d12"]) and env["arch"] == "x86_64":
+        env.AppendUnique(CPPDEFINES=["XESS_ENABLED"])
+
     if env["sdl"]:
         env.Append(CPPDEFINES=["SDL_ENABLED"])
 
@@ -936,6 +940,10 @@ def configure_mingw(env: "SConsEnvironment"):
         env.Append(CPPDEFINES=["VULKAN_ENABLED", "RD_ENABLED"])
         if not env["use_volk"]:
             env.Append(LIBS=["vulkan"])
+
+    # Intel XeSS, loaded from libxess.dll at run time (drivers/xess); Intel ships it for x86_64 only.
+    if (env["vulkan"] or env["d3d12"]) and env["arch"] == "x86_64":
+        env.AppendUnique(CPPDEFINES=["XESS_ENABLED"])
 
     if env["sdl"]:
         env.Append(CPPDEFINES=["SDL_ENABLED"])

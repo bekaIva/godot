@@ -70,7 +70,12 @@ env.drivers_sources += thirdparty_obj
 
 driver_obj = []
 
-env.add_source_files(driver_obj, "*.cpp")
+env_driver = env.Clone()
+if env["platform"] == "windows":
+    # Intel XeSS headers (the library is loaded at run time, drivers/xess).
+    env_driver.Prepend(CPPPATH=["#thirdparty/xess"])
+
+env_driver.add_source_files(driver_obj, "*.cpp")
 env.drivers_sources += driver_obj
 
 # Needed to force rebuilding the driver files when the thirdparty code is updated.

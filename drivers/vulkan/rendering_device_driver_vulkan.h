@@ -769,6 +769,32 @@ public:
 	virtual void command_begin_label(CommandBufferID p_cmd_buffer, const char *p_label_name, const Color &p_color) override final;
 	virtual void command_end_label(CommandBufferID p_cmd_buffer) override final;
 
+	/**************/
+	/**** XESS ****/
+	/**************/
+
+#ifdef XESS_ENABLED
+private:
+	// Intel XeSS (drivers/xess). Its device extensions and the features it
+	// asks for are enabled at device creation when libxess.dll is there.
+	bool xess_wanted = false;
+	LocalVector<CharString> xess_device_extensions;
+	bool xess_wants_mutable_descriptor_type = false;
+	bool xess_wants_integer_dot_product = false;
+	VkPhysicalDeviceFeatures xess_core_features = {};
+	bool xess_mutable_descriptor_type = false; // Enabled on the device.
+	bool xess_integer_dot_product = false; // Enabled on the device.
+	int8_t xess_support = -1; // Unknown until has_feature(SUPPORTS_XESS) is asked.
+
+	void _xess_register_device_extensions();
+	bool _xess_is_supported();
+
+public:
+	virtual void *xess_context_create(const XeSSContextCreateInfo &p_info) override final;
+	virtual void xess_context_free(void *p_context) override final;
+	virtual void command_xess_execute(CommandBufferID p_cmd_buffer, void *p_context, const XeSSExecuteInfo &p_info) override final;
+#endif
+
 	/****************/
 	/**** DEBUG *****/
 	/****************/

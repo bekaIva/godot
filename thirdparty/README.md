@@ -1289,6 +1289,22 @@ Files extracted from upstream source:
 - `LICENSE`
 
 
+## xess
+
+- Upstream: https://github.com/intel/xess
+- Version: 3.0.2 (XeSS_SDK_3.0.2.zip, 2026)
+- License: Intel Simplified Software License (October 2022)
+
+Files extracted from upstream source:
+
+- `inc/xess/xess.h`, `inc/xess/xess_d3d12.h`, `inc/xess/xess_vk.h`
+- `LICENSE.txt`
+
+Only the headers: the engine loads `libxess.dll` (`bin/libxess.dll` of the
+same SDK) at run time, so nothing is linked. The licence allows
+redistribution without modification only; do not patch these files.
+
+
 ## zlib
 
 - Upstream: https://github.com/madler/zlib

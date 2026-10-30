@@ -107,6 +107,13 @@ private:
 	VkDebugUtilsMessengerEXT debug_messenger = VK_NULL_HANDLE;
 	VkDebugReportCallbackEXT debug_report = VK_NULL_HANDLE;
 	Functions functions;
+#ifdef XESS_ENABLED
+	// Intel XeSS (drivers/xess): its instance extensions are requested when
+	// libxess.dll is there; ready once all are enabled.
+	LocalVector<CharString> xess_instance_extensions;
+	uint32_t xess_min_api_version = 0;
+	bool xess_ready = false;
+#endif
 
 	Error _initialize_vulkan_version();
 	void _register_requested_instance_extension(const CharString &p_extension_name, bool p_required);
@@ -174,6 +181,9 @@ public:
 	};
 
 	VkInstance instance_get() const;
+#ifdef XESS_ENABLED
+	bool is_xess_ready() const { return xess_ready; }
+#endif
 	VkPhysicalDevice physical_device_get(uint32_t p_device_index) const;
 	uint32_t queue_family_get_count(uint32_t p_device_index) const;
 	VkQueueFamilyProperties queue_family_get(uint32_t p_device_index, uint32_t p_queue_family_index) const;

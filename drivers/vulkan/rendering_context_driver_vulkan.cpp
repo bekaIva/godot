@@ -37,6 +37,11 @@
 #include "core/version.h"
 #include "drivers/vulkan/rendering_device_driver_vulkan.h"
 #include "drivers/vulkan/vulkan_hooks.h"
+#ifdef XESS_ENABLED
+#include "drivers/xess/xess_library.h"
+
+#include <xess_vk.h>
+#endif
 
 #ifndef DEV_ENABLED
 #include "core/os/os.h"
@@ -460,6 +465,28 @@ Error RenderingContextDriverVulkan::_initialize_instance_extensions() {
 		_register_requested_instance_extension(VK_EXT_DEBUG_UTILS_EXTENSION_NAME, false);
 	}
 
+#ifdef XESS_ENABLED
+	// XeSS needs its instance extensions before the instance exists.
+	decltype(&xessVKGetRequiredInstanceExtensions) xess_get_instance_extensions = nullptr;
+	if (XeSSLibrary::load() && XeSSLibrary::get().get_proc(xess_get_instance_extensions, "xessVKGetRequiredInstanceExtensions")) {
+		uint32_t count = 0;
+		const char *const *names = nullptr;
+		xess_result_t result = xess_get_instance_extensions(&count, &names, &xess_min_api_version);
+		if (result == XESS_RESULT_SUCCESS) {
+			for (uint32_t i = 0; i < count; i++) {
+				CharString name(names[i]);
+				xess_instance_extensions.push_back(name);
+				if (!requested_instance_extensions.has(name)) {
+					_register_requested_instance_extension(name, false);
+				}
+			}
+			xess_ready = true;
+		} else {
+			print_verbose(vformat("XeSS: no Vulkan instance extensions for it (%s).", XeSSLibrary::result_to_string(result)));
+		}
+	}
+#endif
+
 	// Load instance extensions that are available.
 	uint32_t instance_extension_count = 0;
 	VkResult err = vkEnumerateInstanceExtensionProperties(nullptr, &instance_extension_count, nullptr);
@@ -486,6 +513,13 @@ Error RenderingContextDriverVulkan::_initialize_instance_extensions() {
 			enabled_instance_extension_names.insert(extension_name);
 		}
 	}
+
+#ifdef XESS_ENABLED
+	for (const CharString &name : xess_instance_extensions) {
+		xess_ready = xess_ready && enabled_instance_extension_names.has(name);
+	}
+	xess_ready = xess_ready && instance_api_version >= xess_min_api_version;
+#endif
 
 	// Now check our requested extensions.
 	for (KeyValue<CharString, bool> &requested_extension : requested_instance_extensions) {
@@ -696,6 +730,12 @@ Error RenderingContextDriverVulkan::_initialize_instance() {
 	// version, devices can still support newer versions of Vulkan. The exception is when we're on Vulkan 1.0, we should not set this
 	// to anything but 1.0. Note that this value is only used by validation layers to warn us about version issues.
 	uint32_t application_api_version = instance_api_version == VK_API_VERSION_1_0 ? VK_API_VERSION_1_0 : VK_API_VERSION_1_2;
+#ifdef XESS_ENABLED
+	if (xess_ready) {
+		// XeSS's context needs at least the version it asked for.
+		application_api_version = MAX(application_api_version, xess_min_api_version);
+	}
+#endif
 
 	CharString cs = GLOBAL_GET("application/config/name").operator String().utf8();
 	VkApplicationInfo app_info = {};

@@ -35,6 +35,11 @@
 #include "core/os/os.h"
 #include "core/templates/fixed_vector.h"
 #include "drivers/vulkan/vulkan_hooks.h"
+#ifdef XESS_ENABLED
+#include "drivers/xess/xess_library.h"
+
+#include <xess_vk.h>
+#endif
 
 #include <thirdparty/misc/smolv.h>
 
@@ -617,6 +622,10 @@ Error RenderingDeviceDriverVulkan::_initialize_device_extensions() {
 
 	_register_requested_device_extension(VK_KHR_DRIVER_PROPERTIES_EXTENSION_NAME, false);
 
+#ifdef XESS_ENABLED
+	_xess_register_device_extensions();
+#endif
+
 	uint32_t device_extension_count = 0;
 	VkResult err = vkEnumerateDeviceExtensionProperties(physical_device, nullptr, &device_extension_count, nullptr);
 	ERR_FAIL_COND_V_MSG(err != VK_SUCCESS, ERR_CANT_CREATE, vformat("Couldn't get Vulkan device extension count (VkResult error %d).", err));
@@ -868,6 +877,16 @@ Error RenderingDeviceDriverVulkan::_check_device_features() {
 	VK_DEVICEFEATURE_ENABLE_IF(shaderFloat64);
 	VK_DEVICEFEATURE_ENABLE_IF(shaderInt64);
 	VK_DEVICEFEATURE_ENABLE_IF(shaderInt16);
+#ifdef XESS_ENABLED
+	{
+		const VkBool32 *wanted = (const VkBool32 *)&xess_core_features;
+		const VkBool32 *supported = (const VkBool32 *)&physical_device_features;
+		VkBool32 *requested = (VkBool32 *)&requested_device_features;
+		for (uint32_t i = 0; i < sizeof(VkPhysicalDeviceFeatures) / sizeof(VkBool32); i++) {
+			requested[i] = requested[i] || (wanted[i] && supported[i]);
+		}
+	}
+#endif
 	VK_DEVICEFEATURE_ENABLE_IF(shaderResourceMinLod);
 	VK_DEVICEFEATURE_ENABLE_IF(variableMultisampleRate);
 
@@ -1006,10 +1025,30 @@ Error RenderingDeviceDriverVulkan::_check_device_capabilities() {
 			next_features = &sync_2_features;
 		}
 
+#ifdef XESS_ENABLED
+		VkPhysicalDeviceMutableDescriptorTypeFeaturesEXT mutable_descriptor_type_features = {};
+		if (xess_wants_mutable_descriptor_type && enabled_device_extension_names.has(VK_EXT_MUTABLE_DESCRIPTOR_TYPE_EXTENSION_NAME)) {
+			mutable_descriptor_type_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MUTABLE_DESCRIPTOR_TYPE_FEATURES_EXT;
+			mutable_descriptor_type_features.pNext = next_features;
+			next_features = &mutable_descriptor_type_features;
+		}
+		VkPhysicalDeviceShaderIntegerDotProductFeaturesKHR integer_dot_product_features = {};
+		if (xess_wants_integer_dot_product && enabled_device_extension_names.has(VK_KHR_SHADER_INTEGER_DOT_PRODUCT_EXTENSION_NAME)) {
+			integer_dot_product_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_INTEGER_DOT_PRODUCT_FEATURES_KHR;
+			integer_dot_product_features.pNext = next_features;
+			next_features = &integer_dot_product_features;
+		}
+#endif
+
 		VkPhysicalDeviceFeatures2 device_features_2 = {};
 		device_features_2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
 		device_features_2.pNext = next_features;
 		functions.GetPhysicalDeviceFeatures2(physical_device, &device_features_2);
+
+#ifdef XESS_ENABLED
+		xess_mutable_descriptor_type = mutable_descriptor_type_features.mutableDescriptorType;
+		xess_integer_dot_product = integer_dot_product_features.shaderIntegerDotProduct;
+#endif
 
 		if (use_1_2_features) {
 #ifdef MACOS_ENABLED
@@ -1482,6 +1521,23 @@ Error RenderingDeviceDriverVulkan::_initialize_device(const LocalVector<VkDevice
 			create_info_next = &multiview_features;
 		}
 	}
+
+#ifdef XESS_ENABLED
+	VkPhysicalDeviceMutableDescriptorTypeFeaturesEXT mutable_descriptor_type_features = {};
+	if (xess_mutable_descriptor_type) {
+		mutable_descriptor_type_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MUTABLE_DESCRIPTOR_TYPE_FEATURES_EXT;
+		mutable_descriptor_type_features.pNext = create_info_next;
+		mutable_descriptor_type_features.mutableDescriptorType = VK_TRUE;
+		create_info_next = &mutable_descriptor_type_features;
+	}
+	VkPhysicalDeviceShaderIntegerDotProductFeaturesKHR integer_dot_product_features = {};
+	if (xess_integer_dot_product) {
+		integer_dot_product_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_INTEGER_DOT_PRODUCT_FEATURES_KHR;
+		integer_dot_product_features.pNext = create_info_next;
+		integer_dot_product_features.shaderIntegerDotProduct = VK_TRUE;
+		create_info_next = &integer_dot_product_features;
+	}
+#endif
 
 	VkDeviceCreateInfo create_info = {};
 	create_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -7140,6 +7196,170 @@ inline String RenderingDeviceDriverVulkan::get_vulkan_result(VkResult err) {
 	return itos(err);
 }
 
+/**************/
+/**** XESS ****/
+/**************/
+
+#ifdef XESS_ENABLED
+
+static struct {
+	decltype(&xessVKGetRequiredDeviceExtensions) GetRequiredDeviceExtensions = nullptr;
+	decltype(&xessVKGetRequiredDeviceFeatures) GetRequiredDeviceFeatures = nullptr;
+	decltype(&xessVKCreateContext) CreateContext = nullptr;
+	decltype(&xessVKInit) Init = nullptr;
+	decltype(&xessVKExecute) Execute = nullptr;
+} xess_vk;
+
+void RenderingDeviceDriverVulkan::_xess_register_device_extensions() {
+	XeSSLibrary &lib = XeSSLibrary::get();
+	if (!context_driver->is_xess_ready() || !lib.get_proc(xess_vk.GetRequiredDeviceExtensions, "xessVKGetRequiredDeviceExtensions") || !lib.get_proc(xess_vk.GetRequiredDeviceFeatures, "xessVKGetRequiredDeviceFeatures") || !lib.get_proc(xess_vk.CreateContext, "xessVKCreateContext") || !lib.get_proc(xess_vk.Init, "xessVKInit") || !lib.get_proc(xess_vk.Execute, "xessVKExecute")) {
+		return;
+	}
+
+	uint32_t count = 0;
+	const char *const *names = nullptr;
+	xess_result_t result = xess_vk.GetRequiredDeviceExtensions(context_driver->instance_get(), physical_device, &count, &names);
+	if (result != XESS_RESULT_SUCCESS) {
+		print_verbose(vformat("XeSS: no Vulkan device extensions for it (%s).", XeSSLibrary::result_to_string(result)));
+		return;
+	}
+	for (uint32_t i = 0; i < count; i++) {
+		CharString name(names[i]);
+		xess_device_extensions.push_back(name);
+		if (!requested_device_extensions.has(name)) {
+			_register_requested_device_extension(name, false);
+		}
+	}
+
+	// The features XeSS asks for, as a chain it owns. Godot enables its core
+	// features through pEnabledFeatures, so the chain is read here and the
+	// features are enabled with Godot's own (where the GPU has them).
+	void *features = nullptr;
+	result = xess_vk.GetRequiredDeviceFeatures(context_driver->instance_get(), physical_device, &features);
+	if (result != XESS_RESULT_SUCCESS) {
+		print_verbose(vformat("XeSS: no Vulkan device features for it (%s).", XeSSLibrary::result_to_string(result)));
+		return;
+	}
+	for (const VkBaseInStructure *feature = (const VkBaseInStructure *)features; feature != nullptr; feature = feature->pNext) {
+		switch (feature->sType) {
+			case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2:
+				xess_core_features = ((const VkPhysicalDeviceFeatures2 *)feature)->features;
+				break;
+			case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MUTABLE_DESCRIPTOR_TYPE_FEATURES_EXT:
+				xess_wants_mutable_descriptor_type = ((const VkPhysicalDeviceMutableDescriptorTypeFeaturesEXT *)feature)->mutableDescriptorType;
+				break;
+			case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_INTEGER_DOT_PRODUCT_FEATURES:
+				xess_wants_integer_dot_product = ((const VkPhysicalDeviceShaderIntegerDotProductFeatures *)feature)->shaderIntegerDotProduct;
+				break;
+			case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES:
+				xess_wants_integer_dot_product = xess_wants_integer_dot_product || ((const VkPhysicalDeviceVulkan13Features *)feature)->shaderIntegerDotProduct;
+				break;
+			case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES:
+			case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES:
+				// shaderInt8 and shaderFloat16: Godot enables both where supported.
+				break;
+			default:
+				print_verbose(vformat("XeSS: asks for Vulkan feature structure %d, which Godot does not enable.", int(feature->sType)));
+				break;
+		}
+	}
+	xess_wanted = true;
+}
+
+bool RenderingDeviceDriverVulkan::_xess_is_supported() {
+	if (xess_support >= 0) {
+		return xess_support == 1;
+	}
+	xess_support = 0;
+	if (!xess_wanted) {
+		return false;
+	}
+	for (const CharString &name : xess_device_extensions) {
+		if (!enabled_device_extension_names.has(name)) {
+			print_verbose(vformat("XeSS is not available with Vulkan: the device lacks %s.", String::utf8(name)));
+			return false;
+		}
+	}
+
+	// A context loads the implementation for this GPU, and fails where XeSS
+	// cannot run.
+	XeSSLibrary &lib = XeSSLibrary::get();
+	xess_context_handle_t context = nullptr;
+	xess_result_t result = xess_vk.CreateContext(context_driver->instance_get(), physical_device, vk_device, &context);
+	if (result != XESS_RESULT_SUCCESS) {
+		print_verbose(vformat("XeSS is not available on this GPU with Vulkan (%s).", XeSSLibrary::result_to_string(result)));
+		return false;
+	}
+	if (lib.IsOptimalDriver(context) == XESS_RESULT_WARNING_OLD_DRIVER) {
+		WARN_PRINT("XeSS: the GPU driver is older than XeSS recommends; a newer driver gives better quality and speed.");
+	}
+	lib.DestroyContext(context);
+	print_verbose(vformat("XeSS %s is available on Vulkan.", lib.get_version_string()));
+	xess_support = 1;
+	return true;
+}
+
+void *RenderingDeviceDriverVulkan::xess_context_create(const XeSSContextCreateInfo &p_info) {
+	ERR_FAIL_COND_V(!_xess_is_supported(), nullptr);
+	XeSSLibrary &lib = XeSSLibrary::get();
+
+	xess_context_handle_t context = nullptr;
+	xess_result_t result = xess_vk.CreateContext(context_driver->instance_get(), physical_device, vk_device, &context);
+	ERR_FAIL_COND_V_MSG(result != XESS_RESULT_SUCCESS, nullptr, vformat("XeSS: creating a context failed (%s).", XeSSLibrary::result_to_string(result)));
+	lib.SetLoggingCallback(context, XESS_LOGGING_LEVEL_WARNING, XeSSLibrary::log_callback);
+
+	xess_vk_init_params_t params = {};
+	params.outputResolution = { uint32_t(p_info.output_size.width), uint32_t(p_info.output_size.height) };
+	params.qualitySetting = xess_quality_settings_t(p_info.quality);
+	params.initFlags = p_info.init_flags;
+	result = xess_vk.Init(context, &params);
+	if (result != XESS_RESULT_SUCCESS) {
+		lib.DestroyContext(context);
+		ERR_FAIL_V_MSG(nullptr, vformat("XeSS: initializing a %dx%d context failed (%s).", p_info.output_size.width, p_info.output_size.height, XeSSLibrary::result_to_string(result)));
+	}
+	return context;
+}
+
+void RenderingDeviceDriverVulkan::xess_context_free(void *p_context) {
+	XeSSLibrary::get().DestroyContext(xess_context_handle_t(p_context));
+}
+
+void RenderingDeviceDriverVulkan::command_xess_execute(CommandBufferID p_cmd_buffer, void *p_context, const XeSSExecuteInfo &p_info) {
+	const CommandBufferInfo *command_buffer = (const CommandBufferInfo *)p_cmd_buffer.id;
+	// XeSS cannot ask Vulkan about an image: it takes the view, its range and size.
+	auto image_view = [](TextureID p_texture) {
+		const TextureInfo *tex_info = (const TextureInfo *)p_texture.id;
+		xess_vk_image_view_info info = {};
+		info.imageView = tex_info->vk_view;
+		info.image = tex_info->vk_view_create_info.image;
+		info.subresourceRange = tex_info->vk_view_create_info.subresourceRange;
+		info.format = tex_info->vk_view_create_info.format;
+		info.width = MAX(1u, tex_info->vk_create_info.extent.width >> info.subresourceRange.baseMipLevel);
+		info.height = MAX(1u, tex_info->vk_create_info.extent.height >> info.subresourceRange.baseMipLevel);
+		return info;
+	};
+	xess_context_handle_t context = xess_context_handle_t(p_context);
+	XeSSLibrary::get().SetVelocityScale(context, p_info.velocity_scale.x, p_info.velocity_scale.y);
+
+	xess_vk_execute_params_t params = {};
+	params.colorTexture = image_view(p_info.color);
+	params.velocityTexture = image_view(p_info.velocity);
+	params.depthTexture = image_view(p_info.depth);
+	params.outputTexture = image_view(p_info.output);
+	params.jitterOffsetX = p_info.jitter.x;
+	params.jitterOffsetY = p_info.jitter.y;
+	params.exposureScale = p_info.exposure_scale;
+	params.resetHistory = p_info.reset ? 1 : 0;
+	params.inputWidth = uint32_t(p_info.input_size.width);
+	params.inputHeight = uint32_t(p_info.input_size.height);
+	xess_result_t result = xess_vk.Execute(context, command_buffer->vk_command_buffer, &params);
+	if (result != XESS_RESULT_SUCCESS) {
+		ERR_PRINT_ONCE(vformat("XeSS: recording the upscale failed (%s).", XeSSLibrary::result_to_string(result)));
+	}
+}
+
+#endif // XESS_ENABLED
+
 /********************/
 /**** SUBMISSION ****/
 /********************/
@@ -7421,6 +7641,10 @@ bool RenderingDeviceDriverVulkan::has_feature(Features p_feature) {
 #else
 			return context_driver->is_colorspace_supported();
 #endif // defined(WINDOWS_ENABLED)
+#ifdef XESS_ENABLED
+		case SUPPORTS_XESS:
+			return _xess_is_supported();
+#endif
 		default:
 			return false;
 	}
