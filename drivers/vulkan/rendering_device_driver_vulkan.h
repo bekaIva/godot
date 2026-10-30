@@ -413,11 +413,6 @@ private:
 		RenderPassInfo *active_render_pass = nullptr;
 	};
 
-#ifdef DLSS_ENABLED
-	// DLSS records into the command buffer from a driver callback.
-	friend class NGXVulkan;
-#endif
-
 public:
 	virtual CommandBufferID command_buffer_create(CommandPoolID p_cmd_pool) override final;
 	virtual bool command_buffer_begin(CommandBufferID p_cmd_buffer) override final;
@@ -801,6 +796,14 @@ public:
 	virtual void *xess_context_create(const XeSSContextCreateInfo &p_info) override final;
 	virtual void xess_context_free(void *p_context) override final;
 	virtual void command_xess_execute(CommandBufferID p_cmd_buffer, void *p_context, const XeSSExecuteInfo &p_info) override final;
+#endif
+
+	/**************/
+	/**** DLSS ****/
+	/**************/
+
+#ifdef DLSS_ENABLED
+	virtual bool command_dlss_evaluate(CommandBufferID p_cmd_buffer, void *&r_feature, const DLSSEvaluateInfo &p_info) override final;
 #endif
 
 	/****************/

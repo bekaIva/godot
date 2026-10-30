@@ -36,7 +36,7 @@ using namespace RendererRD;
 
 DLSSContext::~DLSSContext() {
 	// The GPU may still run this frame's evaluation.
-	NGXVulkan::release_dlss(feature, RD::get_singleton()->get_frames_drawn());
+	NGXLibrary::release_dlss(feature, RD::get_singleton()->get_frames_drawn());
 }
 
 DLSSEffect::DLSSEffect() {
@@ -53,40 +53,28 @@ DLSSContext *DLSSEffect::create_context(Size2i p_render_size, Size2i p_output_si
 	return context;
 }
 
-static NGXVulkan::Image _driver_image(RID p_texture) {
-	RD *rd = RD::get_singleton();
-	NGXVulkan::Image image;
-	image.image = rd->get_driver_resource(RD::DRIVER_RESOURCE_TEXTURE, p_texture);
-	image.view = rd->get_driver_resource(RD::DRIVER_RESOURCE_TEXTURE_VIEW, p_texture);
-	image.format = rd->get_driver_resource(RD::DRIVER_RESOURCE_TEXTURE_DATA_FORMAT, p_texture);
-	return image;
-}
-
 void DLSSEffect::upscale(DLSSContext *p_context, const Parameters &p_params) {
 	RD *rd = RD::get_singleton();
 	// Features dropped on a resize, once the GPU is past their last frame.
 	uint64_t frames_drawn = rd->get_frames_drawn();
 	uint64_t frame_delay = rd->get_frame_delay();
 	if (frames_drawn > frame_delay) {
-		NGXVulkan::release_finished_dlss(frames_drawn - frame_delay - 1);
+		NGXLibrary::release_finished_dlss(frames_drawn - frame_delay - 1);
 	}
 
 	CallbackArgs *args = args_allocator.alloc();
 	args->owner = this;
 	args->context = p_context;
-	NGXVulkan::DLSSEvaluate &evaluate = args->evaluate;
-	evaluate.color = _driver_image(p_params.color);
-	evaluate.depth = _driver_image(p_params.depth);
-	evaluate.motion = _driver_image(p_params.velocity);
-	evaluate.output = _driver_image(p_params.output);
-	evaluate.render_width = p_context->render_size.width;
-	evaluate.render_height = p_context->render_size.height;
-	evaluate.output_width = p_context->output_size.width;
-	evaluate.output_height = p_context->output_size.height;
-	evaluate.jitter_x = p_params.jitter.x;
-	evaluate.jitter_y = p_params.jitter.y;
-	evaluate.frame_time_ms = p_params.delta_time * 1000.0;
-	evaluate.reset = p_context->reset;
+	RDD::DLSSEvaluateInfo &info = args->info;
+	info.color = rd->texture_get_driver_id(p_params.color);
+	info.depth = rd->texture_get_driver_id(p_params.depth);
+	info.motion = rd->texture_get_driver_id(p_params.velocity);
+	info.output = rd->texture_get_driver_id(p_params.output);
+	info.render_size = p_context->render_size;
+	info.output_size = p_context->output_size;
+	info.jitter = p_params.jitter;
+	info.frame_time_ms = p_params.delta_time * 1000.0;
+	info.reset = p_context->reset;
 	p_context->reset = false;
 
 	// DLSS reads its inputs from compute shaders and writes the output as a
@@ -103,7 +91,7 @@ void DLSSEffect::upscale(DLSSContext *p_context, const Parameters &p_params) {
 void DLSSEffect::callback(RDD *p_driver, RDD::CommandBufferID p_command_buffer, CallbackArgs *p_args) {
 	DLSSContext *context = p_args->context;
 	if (!context->failed) {
-		context->failed = !NGXVulkan::evaluate_dlss(p_driver, p_command_buffer, context->feature, p_args->evaluate);
+		context->failed = !p_driver->command_dlss_evaluate(p_command_buffer, context->feature, p_args->info);
 	}
 	CallbackArgs::free(&p_args);
 }
