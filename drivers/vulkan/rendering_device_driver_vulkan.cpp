@@ -34,6 +34,7 @@
 #include "core/config/project_settings.h"
 #include "core/os/os.h"
 #include "core/templates/fixed_vector.h"
+#include "drivers/vulkan/ngx_vulkan.h"
 #include "drivers/vulkan/vulkan_hooks.h"
 #ifdef XESS_ENABLED
 #include "drivers/xess/xess_library.h"
@@ -624,6 +625,17 @@ Error RenderingDeviceDriverVulkan::_initialize_device_extensions() {
 
 #ifdef XESS_ENABLED
 	_xess_register_device_extensions();
+#endif
+
+#ifdef DLSS_ENABLED
+	// What NVIDIA's NGX needs for DLSS (nothing on other GPUs).
+	ngx_device_extensions.clear();
+	NGXVulkan::get_device_extensions(context_driver->instance_get(), physical_device, ngx_device_extensions);
+	for (const CharString &extension : ngx_device_extensions) {
+		if (!requested_device_extensions.has(extension)) {
+			_register_requested_device_extension(extension, false);
+		}
+	}
 #endif
 
 	uint32_t device_extension_count = 0;
@@ -1946,6 +1958,21 @@ Error RenderingDeviceDriverVulkan::initialize(uint32_t p_device_index, uint32_t 
 
 	pipeline_statistics.file_access->store_csv_line({ "name", "hash", "stage", "spec", "glslang", "re-spirv", "time" });
 	pipeline_statistics.file_access->flush();
+#endif
+
+#ifdef DLSS_ENABLED
+	if (!ngx_device_extensions.is_empty()) {
+		bool ngx_extensions_enabled = true;
+		for (const CharString &extension : ngx_device_extensions) {
+			if (!enabled_device_extension_names.has(extension)) {
+				print_verbose(String("NGX: Vulkan device extension ") + String::utf8(extension) + String(" is missing; DLSS is not available."));
+				ngx_extensions_enabled = false;
+			}
+		}
+		if (ngx_extensions_enabled) {
+			NGXVulkan::initialize(context_driver->instance_get(), physical_device, vk_device);
+		}
+	}
 #endif
 
 	return OK;
@@ -7629,6 +7656,12 @@ bool RenderingDeviceDriverVulkan::has_feature(Features p_feature) {
 			return acceleration_structure_capabilities.acceleration_structure_support && ray_query_support;
 		case SUPPORTS_RAYTRACING_PIPELINE:
 			return acceleration_structure_capabilities.acceleration_structure_support && raytracing_capabilities.raytracing_pipeline_support;
+		case SUPPORTS_DLSS:
+#ifdef DLSS_ENABLED
+			return NGXVulkan::is_dlss_available(vk_device);
+#else
+			return false;
+#endif
 		case SUPPORTS_HDR_OUTPUT:
 #if defined(WINDOWS_ENABLED)
 			// When using a Vulkan swapchain on Windows, some configurations
@@ -7727,6 +7760,9 @@ RenderingDeviceDriverVulkan::~RenderingDeviceDriverVulkan() {
 	}
 
 	if (vk_device != VK_NULL_HANDLE) {
+#ifdef DLSS_ENABLED
+		NGXVulkan::finalize(vk_device);
+#endif
 		vkDestroyDevice(vk_device, VKC::get_allocation_callbacks(VK_OBJECT_TYPE_DEVICE));
 	}
 }

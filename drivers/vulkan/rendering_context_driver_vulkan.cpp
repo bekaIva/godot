@@ -35,6 +35,7 @@
 #include "core/config/engine.h"
 #include "core/config/project_settings.h"
 #include "core/version.h"
+#include "drivers/vulkan/ngx_vulkan.h"
 #include "drivers/vulkan/rendering_device_driver_vulkan.h"
 #include "drivers/vulkan/vulkan_hooks.h"
 #ifdef XESS_ENABLED
@@ -483,6 +484,17 @@ Error RenderingContextDriverVulkan::_initialize_instance_extensions() {
 			xess_ready = true;
 		} else {
 			print_verbose(vformat("XeSS: no Vulkan instance extensions for it (%s).", XeSSLibrary::result_to_string(result)));
+		}
+	}
+#endif
+
+#ifdef DLSS_ENABLED
+	// What NVIDIA's NGX needs for DLSS; the device decides whether it is used.
+	LocalVector<CharString> ngx_extensions;
+	NGXVulkan::get_instance_extensions(ngx_extensions);
+	for (const CharString &extension : ngx_extensions) {
+		if (!requested_instance_extensions.has(extension)) {
+			_register_requested_instance_extension(extension, false);
 		}
 	}
 #endif

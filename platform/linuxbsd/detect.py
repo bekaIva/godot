@@ -73,6 +73,10 @@ def get_opts():
             "Path to the AccessKit C SDK",
             os.path.join(deps_folder, "accesskit"),
         ),
+        # NVIDIA's DLSS SDK (github.com/NVIDIA/DLSS) is under NVIDIA's own licence and is not part of Godot.
+        # When given, DLSS is built in for the Vulkan driver; the SDK's runtime library
+        # (lib/Linux_x86_64/rel/libnvidia-ngx-dlss.so.<version>) must then sit beside the executable.
+        ("dlss_sdk_path", "Path to NVIDIA's DLSS SDK (enables DLSS on Vulkan)", ""),
     ]
 
 
@@ -538,6 +542,14 @@ def configure(env: "SConsEnvironment"):
 
     if env["vulkan"]:
         env.Append(CPPDEFINES=["VULKAN_ENABLED", "RD_ENABLED"])
+        if env["dlss_sdk_path"] != "":
+            if env["arch"] != "x86_64" or not os.path.exists(env["dlss_sdk_path"] + "/include/nvsdk_ngx.h"):
+                print_error("dlss_sdk_path: NVIDIA's DLSS SDK was not found there, or this is not x86_64.")
+                sys.exit(255)
+            env.Append(CPPDEFINES=["DLSS_ENABLED"])
+            env.Prepend(CPPPATH=[env["dlss_sdk_path"] + "/include"])
+            env.Append(LIBPATH=[env["dlss_sdk_path"] + "/lib/Linux_x86_64"])
+            env.Append(LIBS=["nvsdk_ngx", "dl"])
         if not env["use_volk"]:
             env.ParseConfig("pkg-config vulkan --cflags --libs")
         if not env["builtin_glslang"]:

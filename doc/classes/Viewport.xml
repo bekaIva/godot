@@ -582,7 +582,11 @@
 		<constant name="SCALING_3D_MODE_XESS" value="6" enum="Scaling3DMode">
 			Use Intel XeSS super resolution, a temporal upscaler, for the viewport's 3D buffer. It works on any GPU with DP4a (best on Intel Arc) with the Direct3D 12 or Vulkan driver on Windows x86_64, and needs [code]libxess.dll[/code] of the XeSS SDK beside the executable (or in the project's folder when running from the editor). Like FSR 2.2 it builds the image from past frames: it anti-aliases, also at a [member scaling_3d_scale] of [code]1.0[/code], and replaces TAA. The scale must be at least [code]0.3333[/code] (XeSS's Ultra Performance). Where XeSS is not available ([constant RenderingDevice.SUPPORTS_XESS]), FSR 2.2 is used instead.
 		</constant>
-		<constant name="SCALING_3D_MODE_MAX" value="7" enum="Scaling3DMode">
+		<constant name="SCALING_3D_MODE_DLSS" value="7" enum="Scaling3DMode">
+			Use NVIDIA DLSS (Deep Learning Super Sampling) super resolution: a temporal upscaler, like [constant SCALING_3D_MODE_FSR2], run by NVIDIA's NGX on NVIDIA RTX GPUs. It also anti-aliases, at a scale of [code]1.0[/code] too (DLAA). The amount of scaling can be set using [member scaling_3d_scale]; values from [code]0.3333[/code] to [code]1.0[/code] are supported.
+			[b]Note:[/b] Only available with the Forward+ renderer on the Vulkan driver, in engine builds made with NVIDIA's DLSS SDK ([code]dlss_sdk_path[/code]), on GPUs where [constant RenderingDevice.SUPPORTS_DLSS] is supported. NVIDIA's runtime library ([code]libnvidia-ngx-dlss.so.*[/code]) must be next to the executable. Elsewhere, [constant SCALING_3D_MODE_FSR2] is used instead.
+		</constant>
+		<constant name="SCALING_3D_MODE_MAX" value="8" enum="Scaling3DMode">
 			Represents the size of the [enum Scaling3DMode] enum.
 		</constant>
 		<constant name="MSAA_DISABLED" value="0" enum="MSAA">
