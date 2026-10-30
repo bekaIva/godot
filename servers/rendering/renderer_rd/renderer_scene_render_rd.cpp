@@ -475,6 +475,8 @@ void RendererSceneRenderRD::_render_buffers_post_process_and_tonemap(const Rende
 	if (can_use_effects) {
 		if (scale_mode == RSE::VIEWPORT_SCALING_3D_MODE_FSR) {
 			spatial_upscaler = fsr;
+		} else if (scale_mode == RSE::VIEWPORT_SCALING_3D_MODE_GSR) {
+			spatial_upscaler = gsr;
 		} else if (scale_mode == RSE::VIEWPORT_SCALING_3D_MODE_METALFX_SPATIAL) {
 #if METAL_ENABLED
 			spatial_upscaler = mfx_spatial;
@@ -1878,6 +1880,7 @@ void RendererSceneRenderRD::init() {
 	if (can_use_storage) {
 		fsr = memnew(RendererRD::FSR);
 	}
+	gsr = memnew(RendererRD::GSR);
 #ifdef METAL_ENABLED
 	mfx_spatial = memnew(RendererRD::MFXSpatialEffect);
 #endif
@@ -1909,6 +1912,10 @@ RendererSceneRenderRD::~RendererSceneRenderRD() {
 	}
 	if (vrs) {
 		memdelete(vrs);
+	}
+	if (gsr) {
+		memdelete(gsr);
+		gsr = nullptr;
 	}
 	if (fsr) {
 		memdelete(fsr);
