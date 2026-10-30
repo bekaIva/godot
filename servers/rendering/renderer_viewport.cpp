@@ -164,6 +164,7 @@ void RendererViewport::_configure_3d_render_buffers(Viewport *p_viewport) {
 				scaling_type = RSE::scaling_3d_mode_type(scaling_3d_mode);
 				WARN_PRINT_ONCE("MetalFX temporal, XeSS, DLSS and FSR upscaling are not supported in the Mobile renderer. Falling back to bilinear scaling.");
 			}
+			// Snapdragon GSR is a fragment shader, so the Mobile renderer draws it too.
 
 			if (scaling_3d_mode == RSE::VIEWPORT_SCALING_3D_MODE_XESS) {
 				if (!RD::get_singleton()->has_feature(RD::SUPPORTS_XESS)) {
@@ -271,6 +272,7 @@ void RendererViewport::_configure_3d_render_buffers(Viewport *p_viewport) {
 				case RSE::VIEWPORT_SCALING_3D_MODE_FSR2:
 				case RSE::VIEWPORT_SCALING_3D_MODE_XESS:
 				case RSE::VIEWPORT_SCALING_3D_MODE_DLSS:
+				case RSE::VIEWPORT_SCALING_3D_MODE_GSR:
 					target_width = p_viewport->size.width;
 					target_height = p_viewport->size.height;
 					render_width = MAX(target_width * scaling_3d_scale, 1.0); // target_width / (target_width * scaling)
