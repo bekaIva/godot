@@ -149,6 +149,9 @@ class RenderingDeviceDriverVulkan : public RenderingDeviceDriver {
 	VkPhysicalDeviceFeatures requested_device_features = {};
 	HashMap<CharString, bool> requested_device_extensions;
 	HashSet<CharString> enabled_device_extension_names;
+#ifdef DLSS_ENABLED
+	LocalVector<CharString> ngx_device_extensions;
+#endif
 	TightLocalVector<TightLocalVector<Queue>> queue_families;
 	TightLocalVector<VkQueueFamilyProperties> queue_family_properties;
 	RDD::Capabilities device_capabilities;
@@ -409,6 +412,11 @@ private:
 		Framebuffer *active_framebuffer = nullptr;
 		RenderPassInfo *active_render_pass = nullptr;
 	};
+
+#ifdef DLSS_ENABLED
+	// DLSS records into the command buffer from a driver callback.
+	friend class NGXVulkan;
+#endif
 
 public:
 	virtual CommandBufferID command_buffer_create(CommandPoolID p_cmd_pool) override final;

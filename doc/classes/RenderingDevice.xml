@@ -2850,6 +2850,9 @@
 		<constant name="SUPPORTS_XESS" value="14" enum="Features">
 			Support for Intel XeSS super resolution ([constant Viewport.SCALING_3D_MODE_XESS]): the Direct3D 12 or Vulkan driver on Windows x86_64, with [code]libxess.dll[/code] found and a GPU XeSS can run on.
 		</constant>
+		<constant name="SUPPORTS_DLSS" value="15" enum="Features">
+			Support for NVIDIA DLSS super resolution ([constant RenderingServer.VIEWPORT_SCALING_3D_MODE_DLSS]): an NVIDIA RTX GPU on the Vulkan driver, in an engine build made with NVIDIA's DLSS SDK, with NVIDIA's runtime library found.
+		</constant>
 		<constant name="LIMIT_MAX_BOUND_UNIFORM_SETS" value="0" enum="Limit">
 			Maximum number of uniform sets that can be bound at a given time.
 		</constant>

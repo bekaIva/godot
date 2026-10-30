@@ -90,6 +90,14 @@ void RenderForwardClustered::RenderBufferDataForwardClustered::ensure_fsr2(Rende
 	}
 }
 
+#ifdef DLSS_ENABLED
+void RenderForwardClustered::RenderBufferDataForwardClustered::ensure_dlss(RendererRD::DLSSEffect *p_effect) {
+	if (dlss_context == nullptr) {
+		dlss_context = p_effect->create_context(render_buffers->get_internal_size(), render_buffers->get_target_size());
+	}
+}
+#endif
+
 #ifdef METAL_MFXTEMPORAL_ENABLED
 bool RenderForwardClustered::RenderBufferDataForwardClustered::ensure_mfx_temporal(RendererRD::MFXTemporalEffect *p_effect) {
 	if (mfx_temporal_context == nullptr) {
@@ -137,6 +145,13 @@ void RenderForwardClustered::RenderBufferDataForwardClustered::free_data() {
 		memdelete(fsr2_context);
 		fsr2_context = nullptr;
 	}
+
+#ifdef DLSS_ENABLED
+	if (dlss_context) {
+		memdelete(dlss_context);
+		dlss_context = nullptr;
+	}
+#endif
 
 #ifdef METAL_MFXTEMPORAL_ENABLED
 	if (mfx_temporal_context) {
@@ -1801,6 +1816,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		SCALE_FSR2,
 		SCALE_MFX,
 		SCALE_XESS,
+		SCALE_DLSS,
 	} scale_type = SCALE_NONE;
 
 	switch (rb->get_scaling_3d_mode()) {
@@ -1817,6 +1833,13 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		case RSE::VIEWPORT_SCALING_3D_MODE_XESS:
 #ifdef XESS_ENABLED
 			scale_type = SCALE_XESS;
+#else
+			scale_type = SCALE_NONE;
+#endif
+			break;
+		case RSE::VIEWPORT_SCALING_3D_MODE_DLSS:
+#ifdef DLSS_ENABLED
+			scale_type = dlss_effect ? SCALE_DLSS : SCALE_NONE;
 #else
 			scale_type = SCALE_NONE;
 #endif
@@ -2251,10 +2274,10 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		RD::get_singleton()->draw_command_end_label();
 
 		if (using_motion_pass) {
-			if (scale_type == SCALE_MFX || scale_type == SCALE_XESS) {
-				// MetalFX and XeSS take no "invalid" motion vectors (FSR 2.2 derives
-				// them from depth itself): store the camera's motion for the static
-				// geometry the motion pass leaves out.
+			if (scale_type == SCALE_MFX || scale_type == SCALE_XESS || scale_type == SCALE_DLSS) {
+				// MetalFX, XeSS and DLSS take no "invalid" motion vectors (FSR 2.2
+				// derives them from depth itself): store the camera's motion for the
+				// static geometry the motion pass leaves out.
 				motion_vectors_store->process(rb,
 						p_render_data->scene_data->cam_projection, p_render_data->scene_data->cam_transform,
 						p_render_data->scene_data->prev_cam_projection, p_render_data->scene_data->prev_cam_transform);
@@ -2582,6 +2605,28 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 				// (auto exposure is not passed on).
 				params.exposure_scale = is_environment(p_render_data->environment) ? environment_get_exposure(p_render_data->environment) : 1.0f;
 				xess_effect->upscale(params);
+			}
+
+			RD::get_singleton()->draw_command_end_label();
+#endif
+		} else if (scale_type == SCALE_DLSS) {
+#ifdef DLSS_ENABLED
+			rb_data->ensure_dlss(dlss_effect);
+
+			RD::get_singleton()->draw_command_begin_label("DLSS");
+			RENDER_TIMESTAMP("DLSS");
+
+			for (uint32_t v = 0; v < rb->get_view_count(); v++) {
+				RendererRD::DLSSEffect::Parameters params;
+				params.color = rb->get_internal_texture(v);
+				params.depth = rb->get_depth_texture(v);
+				params.velocity = rb->get_velocity_buffer(false, v);
+				params.output = rb->get_upscaled_texture(v);
+				// The projection's jitter in render pixels, as FSR 2 gets it (checked
+				// against a full resolution picture of a still view).
+				params.jitter = p_render_data->scene_data->taa_jitter * Vector2(rb->get_internal_size()) * 0.5f;
+				params.delta_time = float(time_step);
+				dlss_effect->upscale(rb_data->get_dlss_context(), params);
 			}
 
 			RD::get_singleton()->draw_command_end_label();
@@ -5300,6 +5345,14 @@ RenderForwardClustered::RenderForwardClustered() {
 #ifdef XESS_ENABLED
 	xess_effect = memnew(RendererRD::XeSSEffect);
 #endif
+#ifdef DLSS_ENABLED
+	if (RD::get_singleton()->has_feature(RD::SUPPORTS_DLSS)) {
+		if (motion_vectors_store == nullptr) {
+			motion_vectors_store = memnew(RendererRD::MotionVectorsStore);
+		}
+		dlss_effect = memnew(RendererRD::DLSSEffect);
+	}
+#endif
 }
 
 RenderForwardClustered::~RenderForwardClustered() {
@@ -5322,6 +5375,13 @@ RenderForwardClustered::~RenderForwardClustered() {
 	if (xess_effect) {
 		memdelete(xess_effect);
 		xess_effect = nullptr;
+	}
+#endif
+
+#ifdef DLSS_ENABLED
+	if (dlss_effect) {
+		memdelete(dlss_effect);
+		dlss_effect = nullptr;
 	}
 #endif
 

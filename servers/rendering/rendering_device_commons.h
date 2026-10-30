@@ -1037,6 +1037,7 @@ public:
 		SUPPORTS_RAYTRACING_PIPELINE,
 		SUPPORTS_HDR_OUTPUT,
 		SUPPORTS_XESS,
+		SUPPORTS_DLSS,
 	};
 
 	enum SubgroupOperations {
