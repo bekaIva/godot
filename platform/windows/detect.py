@@ -509,6 +509,11 @@ def configure_msvc(env: "SConsEnvironment"):
     if (env["vulkan"] or env["d3d12"]) and env["arch"] == "x86_64":
         env.AppendUnique(CPPDEFINES=["XESS_ENABLED"])
 
+    # NVIDIA DLSS through NGX, whose library is MSVC-only: the bridge (drivers/ngx/ngx_bridge.cpp) is built
+    # with MSVC as patina_ngx.dll and loaded at run time, so the engine needs no NVIDIA headers or libraries.
+    if (env["vulkan"] or env["d3d12"]) and env["arch"] == "x86_64":
+        env.AppendUnique(CPPDEFINES=["DLSS_ENABLED", "NGX_BRIDGE_DLL"])
+
     if env["sdl"]:
         env.Append(CPPDEFINES=["SDL_ENABLED"])
 
@@ -944,6 +949,11 @@ def configure_mingw(env: "SConsEnvironment"):
     # Intel XeSS, loaded from libxess.dll at run time (drivers/xess); Intel ships it for x86_64 only.
     if (env["vulkan"] or env["d3d12"]) and env["arch"] == "x86_64":
         env.AppendUnique(CPPDEFINES=["XESS_ENABLED"])
+
+    # NVIDIA DLSS through NGX, whose library is MSVC-only: the bridge (drivers/ngx/ngx_bridge.cpp) is built
+    # with MSVC as patina_ngx.dll and loaded at run time, so the engine needs no NVIDIA headers or libraries.
+    if (env["vulkan"] or env["d3d12"]) and env["arch"] == "x86_64":
+        env.AppendUnique(CPPDEFINES=["DLSS_ENABLED", "NGX_BRIDGE_DLL"])
 
     if env["sdl"]:
         env.Append(CPPDEFINES=["SDL_ENABLED"])

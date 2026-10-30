@@ -899,12 +899,28 @@ public:
 private:
 	int8_t xess_support = -1; // Unknown until has_feature(SUPPORTS_XESS) is asked.
 	bool _xess_is_supported();
-	void _xess_transition(CommandBufferInfo *p_cmd_buf_info, TextureInfo *p_texture, D3D12_RESOURCE_STATES p_state);
 
 public:
 	virtual void *xess_context_create(const XeSSContextCreateInfo &p_info) override final;
 	virtual void xess_context_free(void *p_context) override final;
 	virtual void command_xess_execute(CommandBufferID p_cmd_buffer, void *p_context, const XeSSExecuteInfo &p_info) override final;
+#endif
+
+	/**************/
+	/**** DLSS ****/
+	/**************/
+
+#ifdef DLSS_ENABLED
+	virtual bool command_dlss_evaluate(CommandBufferID p_cmd_buffer, void *&r_feature, const DLSSEvaluateInfo &p_info) override final;
+#endif
+
+#if defined(XESS_ENABLED) || defined(DLSS_ENABLED)
+private:
+	// For upscalers that record into the command list themselves (XeSS, DLSS).
+	void _native_upscaler_transition(CommandBufferInfo *p_cmd_buf_info, TextureInfo *p_texture, D3D12_RESOURCE_STATES p_state);
+	void _native_upscaler_recorded(CommandBufferInfo *p_cmd_buf_info);
+
+public:
 #endif
 
 	/****************/

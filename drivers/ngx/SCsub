@@ -1,0 +1,17 @@
+#!/usr/bin/env python
+from misc.utility.scons_hints import *
+
+Import("env")
+
+env_ngx = env.Clone()
+
+# The engine side of NVIDIA's NGX (DLSS). On Windows the bridge to NGX is
+# patina_ngx.dll, built with MSVC from ngx_bridge.cpp and loaded at run time;
+# elsewhere ngx_bridge.cpp is compiled in, against NVIDIA's DLSS SDK
+# (dlss_sdk_path) and Vulkan's headers.
+sources = ["ngx_library.cpp"]
+if env["platform"] != "windows":
+    env_ngx.Prepend(CPPPATH=["#thirdparty/vulkan/include"])
+    sources.append("ngx_bridge.cpp")
+
+env_ngx.add_source_files(env.drivers_sources, sources)

@@ -35,6 +35,9 @@
 #include "core/os/os.h"
 #include "drivers/d3d12/d3d12_hooks.h"
 #include "drivers/d3d12/rendering_context_driver_d3d12.h"
+#ifdef DLSS_ENABLED
+#include "drivers/ngx/ngx_library.h"
+#endif
 #ifdef XESS_ENABLED
 #include "drivers/xess/xess_library.h"
 
@@ -5733,19 +5736,6 @@ void RenderingDeviceDriverD3D12::xess_context_free(void *p_context) {
 	XeSSLibrary::get().DestroyContext(xess_context_handle_t(p_context));
 }
 
-void RenderingDeviceDriverD3D12::_xess_transition(CommandBufferInfo *p_cmd_buf_info, TextureInfo *p_texture, D3D12_RESOURCE_STATES p_state) {
-	uint32_t planes = 1;
-	if ((p_texture->desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)) {
-		planes = format_get_plane_count(p_texture->format);
-	}
-	for (uint32_t i = 0; i < p_texture->layers; i++) {
-		for (uint32_t j = 0; j < p_texture->mipmaps; j++) {
-			uint32_t subresource = D3D12CalcSubresource(p_texture->base_mip + j, p_texture->base_layer + i, 0, p_texture->desc.MipLevels, p_texture->desc.ArraySize());
-			_resource_transition_batch(p_cmd_buf_info, p_texture, subresource, planes, p_state);
-		}
-	}
-}
-
 void RenderingDeviceDriverD3D12::command_xess_execute(CommandBufferID p_cmd_buffer, void *p_context, const XeSSExecuteInfo &p_info) {
 	CommandBufferInfo *cmd_buf_info = (CommandBufferInfo *)p_cmd_buffer.id;
 	TextureInfo *color = (TextureInfo *)p_info.color.id;
@@ -5756,10 +5746,10 @@ void RenderingDeviceDriverD3D12::command_xess_execute(CommandBufferID p_cmd_buff
 	if (!barrier_capabilities.enhanced_barriers_supported) {
 		// Without enhanced barriers the render graph's barriers do nothing here:
 		// each command puts its resources in the states it needs.
-		_xess_transition(cmd_buf_info, color, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-		_xess_transition(cmd_buf_info, velocity, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-		_xess_transition(cmd_buf_info, depth, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-		_xess_transition(cmd_buf_info, output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+		_native_upscaler_transition(cmd_buf_info, color, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+		_native_upscaler_transition(cmd_buf_info, velocity, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+		_native_upscaler_transition(cmd_buf_info, depth, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+		_native_upscaler_transition(cmd_buf_info, output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 		_resource_transitions_flush(cmd_buf_info);
 	}
 
@@ -5782,16 +5772,95 @@ void RenderingDeviceDriverD3D12::command_xess_execute(CommandBufferID p_cmd_buff
 		ERR_PRINT_ONCE(vformat("XeSS: recording the upscale failed (%s).", XeSSLibrary::result_to_string(result)));
 	}
 
-	// XeSS bound its own descriptor heaps, root signature and pipeline: make the
-	// next draw or dispatch bind Godot's again.
-	cmd_buf_info->descriptor_heaps_set = false;
-	cmd_buf_info->graphics_pso = nullptr;
-	cmd_buf_info->graphics_root_signature_crc = 0;
-	cmd_buf_info->compute_pso = nullptr;
-	cmd_buf_info->compute_root_signature_crc = 0;
+	_native_upscaler_recorded(cmd_buf_info);
 }
 
 #endif // XESS_ENABLED
+
+/**************/
+/**** DLSS ****/
+/**************/
+
+#ifdef DLSS_ENABLED
+
+bool RenderingDeviceDriverD3D12::command_dlss_evaluate(CommandBufferID p_cmd_buffer, void *&r_feature, const DLSSEvaluateInfo &p_info) {
+	CommandBufferInfo *cmd_buf_info = (CommandBufferInfo *)p_cmd_buffer.id;
+	TextureInfo *color = (TextureInfo *)p_info.color.id;
+	TextureInfo *depth = (TextureInfo *)p_info.depth.id;
+	TextureInfo *motion = (TextureInfo *)p_info.motion.id;
+	TextureInfo *output = (TextureInfo *)p_info.output.id;
+
+	if (!barrier_capabilities.enhanced_barriers_supported) {
+		// Without enhanced barriers the render graph's barriers do nothing here:
+		// DLSS reads its inputs from compute shaders and writes its output as an
+		// unordered access view.
+		_native_upscaler_transition(cmd_buf_info, color, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+		_native_upscaler_transition(cmd_buf_info, depth, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+		_native_upscaler_transition(cmd_buf_info, motion, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+		_native_upscaler_transition(cmd_buf_info, output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+		_resource_transitions_flush(cmd_buf_info);
+	}
+
+	// NGX reads each resource's size and format itself.
+	auto image = [](const TextureInfo *p_texture, Size2i p_size) {
+		NGXBridgeImage image = {};
+		image.resource = (uint64_t)p_texture->resource;
+		image.width = p_size.width;
+		image.height = p_size.height;
+		return image;
+	};
+
+	NGXBridgeDLSS params = {};
+	params.color = image(color, p_info.render_size);
+	params.depth = image(depth, p_info.render_size);
+	params.motion = image(motion, p_info.render_size);
+	params.output = image(output, p_info.output_size);
+	params.render_width = p_info.render_size.width;
+	params.render_height = p_info.render_size.height;
+	params.output_width = p_info.output_size.width;
+	params.output_height = p_info.output_size.height;
+	params.jitter_x = p_info.jitter.x;
+	params.jitter_y = p_info.jitter.y;
+	// Godot's motion vectors are in UV units; DLSS wants render pixels.
+	params.motion_scale_x = float(p_info.render_size.width);
+	params.motion_scale_y = float(p_info.render_size.height);
+	params.frame_time_ms = p_info.frame_time_ms;
+	params.reset = p_info.reset ? 1 : 0;
+	ID3D12GraphicsCommandList *command_list = cmd_buf_info->cmd_list.Get();
+	bool created = NGXLibrary::evaluate_dlss(command_list, r_feature, params);
+
+	_native_upscaler_recorded(cmd_buf_info);
+	return created;
+}
+
+#endif // DLSS_ENABLED
+
+#if defined(XESS_ENABLED) || defined(DLSS_ENABLED)
+
+void RenderingDeviceDriverD3D12::_native_upscaler_transition(CommandBufferInfo *p_cmd_buf_info, TextureInfo *p_texture, D3D12_RESOURCE_STATES p_state) {
+	uint32_t planes = 1;
+	if ((p_texture->desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)) {
+		planes = format_get_plane_count(p_texture->format);
+	}
+	for (uint32_t i = 0; i < p_texture->layers; i++) {
+		for (uint32_t j = 0; j < p_texture->mipmaps; j++) {
+			uint32_t subresource = D3D12CalcSubresource(p_texture->base_mip + j, p_texture->base_layer + i, 0, p_texture->desc.MipLevels, p_texture->desc.ArraySize());
+			_resource_transition_batch(p_cmd_buf_info, p_texture, subresource, planes, p_state);
+		}
+	}
+}
+
+void RenderingDeviceDriverD3D12::_native_upscaler_recorded(CommandBufferInfo *p_cmd_buf_info) {
+	// The upscaler bound its own descriptor heaps, root signature and pipeline:
+	// make the next draw or dispatch bind Godot's again.
+	p_cmd_buf_info->descriptor_heaps_set = false;
+	p_cmd_buf_info->graphics_pso = nullptr;
+	p_cmd_buf_info->graphics_root_signature_crc = 0;
+	p_cmd_buf_info->compute_pso = nullptr;
+	p_cmd_buf_info->compute_root_signature_crc = 0;
+}
+
+#endif // XESS_ENABLED || DLSS_ENABLED
 
 /********************/
 /**** SUBMISSION ****/
@@ -6026,6 +6095,10 @@ bool RenderingDeviceDriverD3D12::has_feature(Features p_feature) {
 		case SUPPORTS_XESS:
 			return _xess_is_supported();
 #endif
+#ifdef DLSS_ENABLED
+		case SUPPORTS_DLSS:
+			return NGXLibrary::is_dlss_available(device.Get());
+#endif
 		default:
 			return false;
 	}
@@ -6079,6 +6152,10 @@ RenderingDeviceDriverD3D12::RenderingDeviceDriverD3D12(RenderingContextDriverD3D
 }
 
 RenderingDeviceDriverD3D12::~RenderingDeviceDriverD3D12() {
+#ifdef DLSS_ENABLED
+	NGXLibrary::finalize(device.Get());
+#endif
+
 	rtv_descriptor_heap_pool.free(null_rtv_alloc);
 
 	for (FrameInfo &f : frames) {
@@ -6546,6 +6623,13 @@ Error RenderingDeviceDriverD3D12::initialize(uint32_t p_device_index, uint32_t p
 
 	err = _initialize_command_signatures();
 	ERR_FAIL_COND_V(err != OK, ERR_CANT_CREATE);
+
+#ifdef DLSS_ENABLED
+	// NVIDIA's NGX for DLSS; it needs nothing at device creation.
+	if (adapter_desc.VendorId == RenderingContextDriver::Vendor::VENDOR_NVIDIA) {
+		NGXLibrary::initialize_d3d12(device.Get());
+	}
+#endif
 
 	return OK;
 }

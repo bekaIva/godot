@@ -180,8 +180,9 @@ void RendererViewport::_configure_3d_render_buffers(Viewport *p_viewport) {
 
 			if (scaling_3d_mode == RSE::VIEWPORT_SCALING_3D_MODE_DLSS) {
 				if (!RD::get_singleton()->has_feature(RD::SUPPORTS_DLSS)) {
-					// DLSS needs an NVIDIA RTX GPU, the Vulkan driver and an engine
-					// built with NVIDIA's DLSS SDK.
+					// DLSS needs an NVIDIA RTX GPU, the Vulkan or Direct3D 12 driver,
+					// and NGX: built in with NVIDIA's DLSS SDK (Linux) or the
+					// patina_ngx.dll bridge (Windows).
 					scaling_3d_mode = RSE::VIEWPORT_SCALING_3D_MODE_FSR2;
 					WARN_PRINT_ONCE("DLSS is not supported by the current renderer, hardware or engine build. Falling back to FSR 2 scaling.");
 				} else if (scaling_3d_scale < (1.0 / 3.0 - EPSILON)) {

@@ -34,7 +34,9 @@
 #include "core/config/project_settings.h"
 #include "core/os/os.h"
 #include "core/templates/fixed_vector.h"
-#include "drivers/vulkan/ngx_vulkan.h"
+#ifdef DLSS_ENABLED
+#include "drivers/ngx/ngx_library.h"
+#endif
 #include "drivers/vulkan/vulkan_hooks.h"
 #ifdef XESS_ENABLED
 #include "drivers/xess/xess_library.h"
@@ -630,7 +632,11 @@ Error RenderingDeviceDriverVulkan::_initialize_device_extensions() {
 #ifdef DLSS_ENABLED
 	// What NVIDIA's NGX needs for DLSS (nothing on other GPUs).
 	ngx_device_extensions.clear();
-	NGXVulkan::get_device_extensions(context_driver->instance_get(), physical_device, ngx_device_extensions);
+	VkPhysicalDeviceProperties ngx_device_properties = {};
+	vkGetPhysicalDeviceProperties(physical_device, &ngx_device_properties);
+	if (ngx_device_properties.vendorID == RenderingContextDriver::Vendor::VENDOR_NVIDIA) {
+		NGXLibrary::get_vulkan_device_extensions(context_driver->instance_get(), physical_device, ngx_device_extensions);
+	}
 	for (const CharString &extension : ngx_device_extensions) {
 		if (!requested_device_extensions.has(extension)) {
 			_register_requested_device_extension(extension, false);
@@ -1970,7 +1976,7 @@ Error RenderingDeviceDriverVulkan::initialize(uint32_t p_device_index, uint32_t 
 			}
 		}
 		if (ngx_extensions_enabled) {
-			NGXVulkan::initialize(context_driver->instance_get(), physical_device, vk_device);
+			NGXLibrary::initialize_vulkan(context_driver->instance_get(), physical_device, vk_device, (void *)vkGetInstanceProcAddr, (void *)vkGetDeviceProcAddr);
 		}
 	}
 #endif
@@ -7387,6 +7393,52 @@ void RenderingDeviceDriverVulkan::command_xess_execute(CommandBufferID p_cmd_buf
 
 #endif // XESS_ENABLED
 
+/**************/
+/**** DLSS ****/
+/**************/
+
+#ifdef DLSS_ENABLED
+
+bool RenderingDeviceDriverVulkan::command_dlss_evaluate(CommandBufferID p_cmd_buffer, void *&r_feature, const DLSSEvaluateInfo &p_info) {
+	const CommandBufferInfo *command_buffer = (const CommandBufferInfo *)p_cmd_buffer.id;
+	// NGX takes the image, a view of it, its format and size.
+	auto image = [](TextureID p_texture, Size2i p_size) {
+		const TextureInfo *tex_info = (const TextureInfo *)p_texture.id;
+		VkFormat format = tex_info->vk_view_create_info.format;
+		bool depth = format == VK_FORMAT_D16_UNORM || format == VK_FORMAT_X8_D24_UNORM_PACK32 || format == VK_FORMAT_D32_SFLOAT ||
+				format == VK_FORMAT_D16_UNORM_S8_UINT || format == VK_FORMAT_D24_UNORM_S8_UINT || format == VK_FORMAT_D32_SFLOAT_S8_UINT;
+		NGXBridgeImage image = {};
+		image.resource = (uint64_t)tex_info->vk_view_create_info.image;
+		image.view = (uint64_t)tex_info->vk_view;
+		image.format = format;
+		image.aspect = depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+		image.base_layer = tex_info->vk_view_create_info.subresourceRange.baseArrayLayer;
+		image.width = p_size.width;
+		image.height = p_size.height;
+		return image;
+	};
+
+	NGXBridgeDLSS params = {};
+	params.color = image(p_info.color, p_info.render_size);
+	params.depth = image(p_info.depth, p_info.render_size);
+	params.motion = image(p_info.motion, p_info.render_size);
+	params.output = image(p_info.output, p_info.output_size);
+	params.render_width = p_info.render_size.width;
+	params.render_height = p_info.render_size.height;
+	params.output_width = p_info.output_size.width;
+	params.output_height = p_info.output_size.height;
+	params.jitter_x = p_info.jitter.x;
+	params.jitter_y = p_info.jitter.y;
+	// Godot's motion vectors are in UV units; DLSS wants render pixels.
+	params.motion_scale_x = float(p_info.render_size.width);
+	params.motion_scale_y = float(p_info.render_size.height);
+	params.frame_time_ms = p_info.frame_time_ms;
+	params.reset = p_info.reset ? 1 : 0;
+	return NGXLibrary::evaluate_dlss(command_buffer->vk_command_buffer, r_feature, params);
+}
+
+#endif // DLSS_ENABLED
+
 /********************/
 /**** SUBMISSION ****/
 /********************/
@@ -7658,7 +7710,7 @@ bool RenderingDeviceDriverVulkan::has_feature(Features p_feature) {
 			return acceleration_structure_capabilities.acceleration_structure_support && raytracing_capabilities.raytracing_pipeline_support;
 		case SUPPORTS_DLSS:
 #ifdef DLSS_ENABLED
-			return NGXVulkan::is_dlss_available(vk_device);
+			return NGXLibrary::is_dlss_available(vk_device);
 #else
 			return false;
 #endif
@@ -7761,7 +7813,7 @@ RenderingDeviceDriverVulkan::~RenderingDeviceDriverVulkan() {
 
 	if (vk_device != VK_NULL_HANDLE) {
 #ifdef DLSS_ENABLED
-		NGXVulkan::finalize(vk_device);
+		NGXLibrary::finalize(vk_device);
 #endif
 		vkDestroyDevice(vk_device, VKC::get_allocation_callbacks(VK_OBJECT_TYPE_DEVICE));
 	}

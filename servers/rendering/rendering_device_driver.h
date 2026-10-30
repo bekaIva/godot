@@ -848,6 +848,30 @@ public:
 	// shader-read layout and the output in a storage layout.
 	virtual void command_xess_execute(CommandBufferID p_cmd_buffer, void *p_context, const XeSSExecuteInfo &p_info) {}
 
+	/**************/
+	/**** DLSS ****/
+	/**************/
+
+	// NVIDIA DLSS super resolution (drivers/ngx, renderer_rd/effects/dlss.cpp),
+	// in the drivers that report SUPPORTS_DLSS (Vulkan, and D3D12 on Windows).
+	// A feature serves one render and output size; it is released through
+	// NGXLibrary once the GPU is done with every frame that used it.
+	struct DLSSEvaluateInfo {
+		TextureID color; // Render size, linear HDR.
+		TextureID depth; // Render size, reversed Z.
+		TextureID motion; // Render size, current to previous position, in UV.
+		TextureID output; // Output size, a storage image.
+		Size2i render_size;
+		Size2i output_size;
+		Vector2 jitter; // Render pixels.
+		float frame_time_ms = 0.0f;
+		bool reset = false;
+	};
+
+	// Inside a driver callback: records DLSS, creating r_feature on its first
+	// use; false when the feature cannot be created.
+	virtual bool command_dlss_evaluate(CommandBufferID p_cmd_buffer, void *&r_feature, const DLSSEvaluateInfo &p_info) { return false; }
+
 	/*****************/
 	/**** QUERIES ****/
 	/*****************/

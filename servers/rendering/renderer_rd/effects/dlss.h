@@ -33,7 +33,7 @@
 #ifdef DLSS_ENABLED
 
 #include "core/templates/paged_allocator.h"
-#include "drivers/vulkan/ngx_vulkan.h"
+#include "drivers/ngx/ngx_library.h"
 #include "servers/rendering/rendering_device.h"
 
 namespace RendererRD {
@@ -41,7 +41,7 @@ namespace RendererRD {
 // One DLSS feature per render buffer size. NGX records its creation into a
 // command buffer, so the feature is made on the first upscale.
 struct DLSSContext {
-	NVSDK_NGX_Handle *feature = nullptr;
+	void *feature = nullptr; // NGX's handle.
 	Size2i render_size;
 	Size2i output_size;
 	bool reset = true; // No history yet.
@@ -54,7 +54,7 @@ class DLSSEffect {
 	struct CallbackArgs {
 		DLSSEffect *owner = nullptr;
 		DLSSContext *context = nullptr;
-		NGXVulkan::DLSSEvaluate evaluate;
+		RDD::DLSSEvaluateInfo info;
 
 		static void free(CallbackArgs **p_args) {
 			(*p_args)->owner->args_allocator.free(*p_args);
