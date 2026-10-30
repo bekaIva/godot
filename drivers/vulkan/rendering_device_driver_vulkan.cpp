@@ -7402,7 +7402,7 @@ void RenderingDeviceDriverVulkan::command_xess_execute(CommandBufferID p_cmd_buf
 bool RenderingDeviceDriverVulkan::command_dlss_evaluate(CommandBufferID p_cmd_buffer, void *&r_feature, const DLSSEvaluateInfo &p_info) {
 	const CommandBufferInfo *command_buffer = (const CommandBufferInfo *)p_cmd_buffer.id;
 	// NGX takes the image, a view of it, its format and size.
-	auto image = [](TextureID p_texture, Size2i p_size) {
+	auto ngx_image = [](TextureID p_texture, Size2i p_size) {
 		const TextureInfo *tex_info = (const TextureInfo *)p_texture.id;
 		VkFormat format = tex_info->vk_view_create_info.format;
 		bool depth = format == VK_FORMAT_D16_UNORM || format == VK_FORMAT_X8_D24_UNORM_PACK32 || format == VK_FORMAT_D32_SFLOAT ||
@@ -7419,10 +7419,10 @@ bool RenderingDeviceDriverVulkan::command_dlss_evaluate(CommandBufferID p_cmd_bu
 	};
 
 	NGXBridgeDLSS params = {};
-	params.color = image(p_info.color, p_info.render_size);
-	params.depth = image(p_info.depth, p_info.render_size);
-	params.motion = image(p_info.motion, p_info.render_size);
-	params.output = image(p_info.output, p_info.output_size);
+	params.color = ngx_image(p_info.color, p_info.render_size);
+	params.depth = ngx_image(p_info.depth, p_info.render_size);
+	params.motion = ngx_image(p_info.motion, p_info.render_size);
+	params.output = ngx_image(p_info.output, p_info.output_size);
 	params.render_width = p_info.render_size.width;
 	params.render_height = p_info.render_size.height;
 	params.output_width = p_info.output_size.width;

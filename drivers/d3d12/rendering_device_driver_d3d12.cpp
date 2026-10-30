@@ -5802,7 +5802,7 @@ bool RenderingDeviceDriverD3D12::command_dlss_evaluate(CommandBufferID p_cmd_buf
 	}
 
 	// NGX reads each resource's size and format itself.
-	auto image = [](const TextureInfo *p_texture, Size2i p_size) {
+	auto ngx_image = [](const TextureInfo *p_texture, Size2i p_size) {
 		NGXBridgeImage image = {};
 		image.resource = (uint64_t)p_texture->resource;
 		image.width = p_size.width;
@@ -5811,10 +5811,10 @@ bool RenderingDeviceDriverD3D12::command_dlss_evaluate(CommandBufferID p_cmd_buf
 	};
 
 	NGXBridgeDLSS params = {};
-	params.color = image(color, p_info.render_size);
-	params.depth = image(depth, p_info.render_size);
-	params.motion = image(motion, p_info.render_size);
-	params.output = image(output, p_info.output_size);
+	params.color = ngx_image(color, p_info.render_size);
+	params.depth = ngx_image(depth, p_info.render_size);
+	params.motion = ngx_image(motion, p_info.render_size);
+	params.output = ngx_image(output, p_info.output_size);
 	params.render_width = p_info.render_size.width;
 	params.render_height = p_info.render_size.height;
 	params.output_width = p_info.output_size.width;
