@@ -816,6 +816,38 @@ public:
 
 	typedef void (*DriverCallback)(RenderingDeviceDriver *p_driver, CommandBufferID p_command_buffer, void *p_userdata);
 
+	/**************/
+	/**** XESS ****/
+	/**************/
+
+	// Intel XeSS super resolution (drivers/xess, renderer_rd/effects/xess.cpp),
+	// in the drivers that report SUPPORTS_XESS (D3D12 and Vulkan on Windows
+	// x86_64). A context serves one output size; free it only once the GPU is
+	// done with every frame that used it.
+	struct XeSSContextCreateInfo {
+		Size2i output_size;
+		uint32_t quality = 0; // xess_quality_settings_t.
+		uint32_t init_flags = 0; // xess_init_flags_t.
+	};
+
+	struct XeSSExecuteInfo {
+		TextureID color; // Render resolution, linear HDR.
+		TextureID velocity; // Render resolution, motion from the current to the previous frame.
+		TextureID depth; // Render resolution.
+		TextureID output; // Output size, a storage image.
+		Size2i input_size;
+		Vector2 velocity_scale; // From the velocity texture's units to pixels.
+		Vector2 jitter; // Pixels, as applied to the projection.
+		float exposure_scale = 1.0f;
+		bool reset = false;
+	};
+
+	virtual void *xess_context_create(const XeSSContextCreateInfo &p_info) { return nullptr; }
+	virtual void xess_context_free(void *p_context) {}
+	// Inside a driver callback: the render graph has put the inputs in a
+	// shader-read layout and the output in a storage layout.
+	virtual void command_xess_execute(CommandBufferID p_cmd_buffer, void *p_context, const XeSSExecuteInfo &p_info) {}
+
 	/*****************/
 	/**** QUERIES ****/
 	/*****************/

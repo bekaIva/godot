@@ -54,6 +54,8 @@ if env["opengl3"]:
     SConscript("gl_context/SCsub")
     SConscript("gles3/SCsub")
     SConscript("egl/SCsub")
+if env["platform"] == "windows" and (env["vulkan"] or env["d3d12"]) and env["arch"] == "x86_64":
+    SConscript("xess/SCsub")
 if env["metal"]:
     if "metal" not in supported:
         print_error("Target platform '{}' does not support the Metal rendering driver".format(env["platform"]))

@@ -35,6 +35,11 @@
 #include "core/os/os.h"
 #include "drivers/d3d12/d3d12_hooks.h"
 #include "drivers/d3d12/rendering_context_driver_d3d12.h"
+#ifdef XESS_ENABLED
+#include "drivers/xess/xess_library.h"
+
+#include <xess_d3d12.h>
+#endif
 
 #include <drivers/d3d12/godot_d3d12ma.h>
 #include <drivers/d3d12/godot_nir.h>
@@ -5663,6 +5668,131 @@ void RenderingDeviceDriverD3D12::command_insert_breadcrumb(CommandBufferID p_cmd
 	// TODO: Implement via DRED.
 }
 
+/**************/
+/**** XESS ****/
+/**************/
+
+#ifdef XESS_ENABLED
+
+static struct {
+	decltype(&xessD3D12CreateContext) CreateContext = nullptr;
+	decltype(&xessD3D12Init) Init = nullptr;
+	decltype(&xessD3D12Execute) Execute = nullptr;
+} xess_d3d12;
+
+bool RenderingDeviceDriverD3D12::_xess_is_supported() {
+	if (xess_support >= 0) {
+		return xess_support == 1;
+	}
+	xess_support = 0;
+
+	XeSSLibrary &lib = XeSSLibrary::get();
+	if (!XeSSLibrary::load() || !lib.get_proc(xess_d3d12.CreateContext, "xessD3D12CreateContext") || !lib.get_proc(xess_d3d12.Init, "xessD3D12Init") || !lib.get_proc(xess_d3d12.Execute, "xessD3D12Execute")) {
+		return false;
+	}
+
+	// A context loads the implementation for this GPU (Intel's own, or the
+	// DP4a one), and fails where XeSS cannot run.
+	xess_context_handle_t context = nullptr;
+	xess_result_t result = xess_d3d12.CreateContext(device.Get(), &context);
+	if (result != XESS_RESULT_SUCCESS) {
+		print_verbose(vformat("XeSS is not available on this GPU with Direct3D 12 (%s).", XeSSLibrary::result_to_string(result)));
+		return false;
+	}
+	if (lib.IsOptimalDriver(context) == XESS_RESULT_WARNING_OLD_DRIVER) {
+		WARN_PRINT("XeSS: the GPU driver is older than XeSS recommends; a newer driver gives better quality and speed.");
+	}
+	lib.DestroyContext(context);
+	print_verbose(vformat("XeSS %s is available on Direct3D 12.", lib.get_version_string()));
+	xess_support = 1;
+	return true;
+}
+
+void *RenderingDeviceDriverD3D12::xess_context_create(const XeSSContextCreateInfo &p_info) {
+	ERR_FAIL_COND_V(!_xess_is_supported(), nullptr);
+	XeSSLibrary &lib = XeSSLibrary::get();
+
+	xess_context_handle_t context = nullptr;
+	xess_result_t result = xess_d3d12.CreateContext(device.Get(), &context);
+	ERR_FAIL_COND_V_MSG(result != XESS_RESULT_SUCCESS, nullptr, vformat("XeSS: creating a context failed (%s).", XeSSLibrary::result_to_string(result)));
+	lib.SetLoggingCallback(context, XESS_LOGGING_LEVEL_WARNING, XeSSLibrary::log_callback);
+
+	xess_d3d12_init_params_t params = {};
+	params.outputResolution = { uint32_t(p_info.output_size.width), uint32_t(p_info.output_size.height) };
+	params.qualitySetting = xess_quality_settings_t(p_info.quality);
+	params.initFlags = p_info.init_flags;
+	result = xess_d3d12.Init(context, &params);
+	if (result != XESS_RESULT_SUCCESS) {
+		lib.DestroyContext(context);
+		ERR_FAIL_V_MSG(nullptr, vformat("XeSS: initializing a %dx%d context failed (%s).", p_info.output_size.width, p_info.output_size.height, XeSSLibrary::result_to_string(result)));
+	}
+	return context;
+}
+
+void RenderingDeviceDriverD3D12::xess_context_free(void *p_context) {
+	XeSSLibrary::get().DestroyContext(xess_context_handle_t(p_context));
+}
+
+void RenderingDeviceDriverD3D12::_xess_transition(CommandBufferInfo *p_cmd_buf_info, TextureInfo *p_texture, D3D12_RESOURCE_STATES p_state) {
+	uint32_t planes = 1;
+	if ((p_texture->desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)) {
+		planes = format_get_plane_count(p_texture->format);
+	}
+	for (uint32_t i = 0; i < p_texture->layers; i++) {
+		for (uint32_t j = 0; j < p_texture->mipmaps; j++) {
+			uint32_t subresource = D3D12CalcSubresource(p_texture->base_mip + j, p_texture->base_layer + i, 0, p_texture->desc.MipLevels, p_texture->desc.ArraySize());
+			_resource_transition_batch(p_cmd_buf_info, p_texture, subresource, planes, p_state);
+		}
+	}
+}
+
+void RenderingDeviceDriverD3D12::command_xess_execute(CommandBufferID p_cmd_buffer, void *p_context, const XeSSExecuteInfo &p_info) {
+	CommandBufferInfo *cmd_buf_info = (CommandBufferInfo *)p_cmd_buffer.id;
+	TextureInfo *color = (TextureInfo *)p_info.color.id;
+	TextureInfo *velocity = (TextureInfo *)p_info.velocity.id;
+	TextureInfo *depth = (TextureInfo *)p_info.depth.id;
+	TextureInfo *output = (TextureInfo *)p_info.output.id;
+
+	if (!barrier_capabilities.enhanced_barriers_supported) {
+		// Without enhanced barriers the render graph's barriers do nothing here:
+		// each command puts its resources in the states it needs.
+		_xess_transition(cmd_buf_info, color, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+		_xess_transition(cmd_buf_info, velocity, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+		_xess_transition(cmd_buf_info, depth, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+		_xess_transition(cmd_buf_info, output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+		_resource_transitions_flush(cmd_buf_info);
+	}
+
+	xess_context_handle_t context = xess_context_handle_t(p_context);
+	XeSSLibrary::get().SetVelocityScale(context, p_info.velocity_scale.x, p_info.velocity_scale.y);
+
+	xess_d3d12_execute_params_t params = {};
+	params.pColorTexture = color->resource;
+	params.pVelocityTexture = velocity->resource;
+	params.pDepthTexture = depth->resource;
+	params.pOutputTexture = output->resource;
+	params.jitterOffsetX = p_info.jitter.x;
+	params.jitterOffsetY = p_info.jitter.y;
+	params.exposureScale = p_info.exposure_scale;
+	params.resetHistory = p_info.reset ? 1 : 0;
+	params.inputWidth = uint32_t(p_info.input_size.width);
+	params.inputHeight = uint32_t(p_info.input_size.height);
+	xess_result_t result = xess_d3d12.Execute(context, cmd_buf_info->cmd_list.Get(), &params);
+	if (result != XESS_RESULT_SUCCESS) {
+		ERR_PRINT_ONCE(vformat("XeSS: recording the upscale failed (%s).", XeSSLibrary::result_to_string(result)));
+	}
+
+	// XeSS bound its own descriptor heaps, root signature and pipeline: make the
+	// next draw or dispatch bind Godot's again.
+	cmd_buf_info->descriptor_heaps_set = false;
+	cmd_buf_info->graphics_pso = nullptr;
+	cmd_buf_info->graphics_root_signature_crc = 0;
+	cmd_buf_info->compute_pso = nullptr;
+	cmd_buf_info->compute_root_signature_crc = 0;
+}
+
+#endif // XESS_ENABLED
+
 /********************/
 /**** SUBMISSION ****/
 /********************/
@@ -5892,6 +6022,10 @@ bool RenderingDeviceDriverD3D12::has_feature(Features p_feature) {
 			return false;
 		case SUPPORTS_HDR_OUTPUT:
 			return true;
+#ifdef XESS_ENABLED
+		case SUPPORTS_XESS:
+			return _xess_is_supported();
+#endif
 		default:
 			return false;
 	}

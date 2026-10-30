@@ -109,6 +109,15 @@ bool RenderForwardClustered::RenderBufferDataForwardClustered::ensure_mfx_tempor
 }
 #endif
 
+#ifdef XESS_ENABLED
+void RenderForwardClustered::RenderBufferDataForwardClustered::ensure_xess(RendererRD::XeSSEffect *p_effect) {
+	if (xess_context == nullptr) {
+		xess_effect = p_effect;
+		xess_context = p_effect->create_context(render_buffers->get_internal_size(), render_buffers->get_target_size());
+	}
+}
+#endif
+
 void RenderForwardClustered::RenderBufferDataForwardClustered::free_data() {
 	// JIC, should already have been cleared
 	if (render_buffers) {
@@ -133,6 +142,13 @@ void RenderForwardClustered::RenderBufferDataForwardClustered::free_data() {
 	if (mfx_temporal_context) {
 		memdelete(mfx_temporal_context);
 		mfx_temporal_context = nullptr;
+	}
+#endif
+
+#ifdef XESS_ENABLED
+	if (xess_context) {
+		xess_effect->free_context(xess_context);
+		xess_context = nullptr;
 	}
 #endif
 
@@ -1784,6 +1800,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		SCALE_NONE,
 		SCALE_FSR2,
 		SCALE_MFX,
+		SCALE_XESS,
 	} scale_type = SCALE_NONE;
 
 	switch (rb->get_scaling_3d_mode()) {
@@ -1793,6 +1810,13 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		case RSE::VIEWPORT_SCALING_3D_MODE_METALFX_TEMPORAL:
 #ifdef METAL_MFXTEMPORAL_ENABLED
 			scale_type = SCALE_MFX;
+#else
+			scale_type = SCALE_NONE;
+#endif
+			break;
+		case RSE::VIEWPORT_SCALING_3D_MODE_XESS:
+#ifdef XESS_ENABLED
+			scale_type = SCALE_XESS;
 #else
 			scale_type = SCALE_NONE;
 #endif
@@ -2227,7 +2251,10 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		RD::get_singleton()->draw_command_end_label();
 
 		if (using_motion_pass) {
-			if (scale_type == SCALE_MFX) {
+			if (scale_type == SCALE_MFX || scale_type == SCALE_XESS) {
+				// MetalFX and XeSS take no "invalid" motion vectors (FSR 2.2 derives
+				// them from depth itself): store the camera's motion for the static
+				// geometry the motion pass leaves out.
 				motion_vectors_store->process(rb,
 						p_render_data->scene_data->cam_projection, p_render_data->scene_data->cam_transform,
 						p_render_data->scene_data->prev_cam_projection, p_render_data->scene_data->prev_cam_transform);
@@ -2530,6 +2557,31 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 				params.reset = reset;
 
 				mfx_temporal_effect->process(rb_data->get_mfx_temporal_context(), params);
+			}
+
+			RD::get_singleton()->draw_command_end_label();
+#endif
+		} else if (scale_type == SCALE_XESS) {
+#ifdef XESS_ENABLED
+			rb_data->ensure_xess(xess_effect);
+
+			RD::get_singleton()->draw_command_begin_label("XeSS");
+			RENDER_TIMESTAMP("XeSS");
+
+			for (uint32_t v = 0; v < rb->get_view_count(); v++) {
+				RendererRD::XeSSEffect::Parameters params;
+				params.context = rb_data->get_xess_context();
+				params.internal_size = rb->get_internal_size();
+				params.color = rb->get_internal_texture(v);
+				params.depth = rb->get_depth_texture(v);
+				params.velocity = rb->get_velocity_buffer(false, v);
+				params.output = rb->get_upscaled_texture(v);
+				// The same jitter as FSR 2.2, in pixels; XeSS's convention is FSR's.
+				params.jitter = p_render_data->scene_data->taa_jitter * Vector2(rb->get_internal_size()) * 0.5f;
+				// XeSS tonemaps internally: give it the exposure the tonemapper applies
+				// (auto exposure is not passed on).
+				params.exposure_scale = is_environment(p_render_data->environment) ? environment_get_exposure(p_render_data->environment) : 1.0f;
+				xess_effect->upscale(params);
 			}
 
 			RD::get_singleton()->draw_command_end_label();
@@ -5239,9 +5291,14 @@ RenderForwardClustered::RenderForwardClustered() {
 	taa = memnew(RendererRD::TAA);
 	fsr2_effect = memnew(RendererRD::FSR2Effect);
 	ss_effects = memnew(RendererRD::SSEffects);
-#ifdef METAL_MFXTEMPORAL_ENABLED
+#if defined(METAL_MFXTEMPORAL_ENABLED) || defined(XESS_ENABLED)
 	motion_vectors_store = memnew(RendererRD::MotionVectorsStore);
+#endif
+#ifdef METAL_MFXTEMPORAL_ENABLED
 	mfx_temporal_effect = memnew(RendererRD::MFXTemporalEffect);
+#endif
+#ifdef XESS_ENABLED
+	xess_effect = memnew(RendererRD::XeSSEffect);
 #endif
 }
 
@@ -5261,17 +5318,24 @@ RenderForwardClustered::~RenderForwardClustered() {
 		fsr2_effect = nullptr;
 	}
 
+#ifdef XESS_ENABLED
+	if (xess_effect) {
+		memdelete(xess_effect);
+		xess_effect = nullptr;
+	}
+#endif
+
 #ifdef METAL_MFXTEMPORAL_ENABLED
 	if (mfx_temporal_effect) {
 		memdelete(mfx_temporal_effect);
 		mfx_temporal_effect = nullptr;
 	}
+#endif
 
 	if (motion_vectors_store) {
 		memdelete(motion_vectors_store);
 		motion_vectors_store = nullptr;
 	}
-#endif
 
 	RD::get_singleton()->free_rid(shadow_sampler);
 	RSG::light_storage->directional_shadow_atlas_set_size(0);

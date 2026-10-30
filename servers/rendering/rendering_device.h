@@ -1955,6 +1955,8 @@ public:
 	bool is_composite_alpha_supported() const;
 
 	uint64_t get_driver_resource(DriverResource p_resource, RID p_rid = RID(), uint64_t p_index = 0);
+	// The driver's own ID of a texture, for driver methods called from a driver callback (XeSS).
+	RDD::TextureID texture_get_driver_id(RID p_texture);
 
 	String get_driver_and_device_memory_report() const;
 
