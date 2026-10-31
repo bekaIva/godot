@@ -31,6 +31,7 @@
 #include "rendering_context_driver_d3d12.h"
 
 #include "core/config/engine.h"
+#include "core/os/os.h" // DRED_DIAG
 #include "core/config/project_settings.h"
 #include "core/string/ustring.h"
 #include "core/templates/local_vector.h"
@@ -218,6 +219,20 @@ Error RenderingContextDriverD3D12::initialize() {
 	Error err = _init_device_factory();
 	ERR_FAIL_COND_V(err != OK, ERR_CANT_CREATE);
 
+	if (OS::get_singleton()->has_environment("PATINA_DRED")) { // DRED_DIAG
+		PFN_D3D12_GET_DEBUG_INTERFACE get_debug = (PFN_D3D12_GET_DEBUG_INTERFACE)(void *)GetProcAddress(lib_d3d12, "D3D12GetDebugInterface");
+		ComPtr<ID3D12DeviceRemovedExtendedDataSettings1> dred;
+		HRESULT dr = device_factory ? device_factory->GetConfigurationInterface(CLSID_D3D12DeviceRemovedExtendedData, IID_PPV_ARGS(&dred)) : (get_debug ? get_debug(IID_PPV_ARGS(&dred)) : E_FAIL);
+		print_line(vformat("DRED_DIAG: factory %d, settings 0x%08x", device_factory ? 1 : 0, (uint32_t)dr));
+		if (SUCCEEDED(dr)) {
+			dred->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+			dred->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+			dred->SetBreadcrumbContextEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+			print_line("DRED_DIAG: enabled");
+		} else {
+			print_line("DRED_DIAG: settings interface not available");
+		}
+	}
 	if (use_validation_layers()) {
 		err = _initialize_debug_layers();
 		ERR_FAIL_COND_V(err != OK, ERR_CANT_CREATE);
@@ -348,6 +363,9 @@ void RenderingContextDriverD3D12::surface_destroy(SurfaceID p_surface) {
 }
 
 bool RenderingContextDriverD3D12::is_debug_utils_enabled() const {
+	if (OS::get_singleton()->has_environment("PATINA_DRED")) { // DRED_DIAG
+		return true;
+	}
 #ifdef PIX_ENABLED
 	return true;
 #else

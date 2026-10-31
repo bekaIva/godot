@@ -867,6 +867,141 @@ void RenderingDeviceDriverD3D12::_resource_transitions_flush(CommandBufferInfo *
 /**** BUFFERS ****/
 /*****************/
 
+
+static bool dred_diag() { // DRED_DIAG
+	static int on = -1;
+	if (on < 0) {
+		on = OS::get_singleton()->has_environment("PATINA_DRED") ? 1 : 0;
+	}
+	return on == 1;
+}
+
+static String dred_op_name(D3D12_AUTO_BREADCRUMB_OP p_op) { // DRED_DIAG
+	static const char *names[] = { "SETMARKER", "BEGINEVENT", "ENDEVENT", "DRAWINSTANCED", "DRAWINDEXEDINSTANCED", "EXECUTEINDIRECT", "DISPATCH", "COPYBUFFERREGION", "COPYTEXTUREREGION", "COPYRESOURCE", "COPYTILES", "RESOLVESUBRESOURCE", "CLEARRENDERTARGETVIEW", "CLEARUNORDEREDACCESSVIEW", "CLEARDEPTHSTENCILVIEW", "RESOURCEBARRIER", "EXECUTEBUNDLE", "PRESENT", "RESOLVEQUERYDATA", "BEGINSUBMISSION", "ENDSUBMISSION", "DECODEFRAME", "PROCESSFRAMES", "ATOMICCOPYBUFFERUINT", "ATOMICCOPYBUFFERUINT64", "RESOLVESUBRESOURCEREGION", "WRITEBUFFERIMMEDIATE", "DECODEFRAME1", "SETPROTECTEDRESOURCESESSION", "DECODEFRAME2", "PROCESSFRAMES1", "BUILDRAYTRACINGACCELERATIONSTRUCTURE", "EMITRAYTRACINGACCELERATIONSTRUCTUREPOSTBUILDINFO", "COPYRAYTRACINGACCELERATIONSTRUCTURE", "DISPATCHRAYS", "INITIALIZEMETACOMMAND", "EXECUTEMETACOMMAND", "ESTIMATEMOTION", "RESOLVEMOTIONVECTORHEAP", "SETPIPELINESTATE1", "INITIALIZEEXTENSIONCOMMAND", "EXECUTEEXTENSIONCOMMAND", "DISPATCHMESH", "ENCODEFRAME", "RESOLVEENCODEROUTPUTMETADATA", "BARRIER", "BEGIN_COMMAND_LIST", "DISPATCHGRAPH", "SETPROGRAM" };
+	return uint32_t(p_op) < sizeof(names) / sizeof(names[0]) ? String(names[p_op]) : itos(p_op);
+}
+
+
+struct DredCrumbs { // DRED_DIAG
+	Microsoft::WRL::ComPtr<ID3D12Resource> buffer;
+	volatile uint32_t *mapped = nullptr;
+	LocalVector<String> names;
+	LocalVector<uint32_t> stack;
+};
+static DredCrumbs dred_crumbs;
+
+static void dred_crumb(ID3D12Device *p_device, ID3D12GraphicsCommandList *p_list, uint32_t p_slot, uint32_t p_value, bool p_in) { // DRED_DIAG
+	if (!dred_crumbs.buffer) {
+		D3D12_HEAP_PROPERTIES heap = {};
+		heap.Type = D3D12_HEAP_TYPE_CUSTOM;
+		heap.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_WRITE_BACK;
+		heap.MemoryPoolPreference = D3D12_MEMORY_POOL_L0;
+		D3D12_RESOURCE_DESC desc = CD3DX12_RESOURCE_DESC::Buffer(256);
+		HRESULT hr = p_device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(dred_crumbs.buffer.GetAddressOf()));
+		if (FAILED(hr)) {
+			print_line(vformat("DRED_DIAG: crumb buffer failed 0x%08x", (uint32_t)hr));
+			return;
+		}
+		void *ptr = nullptr;
+		dred_crumbs.buffer->Map(0, nullptr, &ptr);
+		dred_crumbs.mapped = (volatile uint32_t *)ptr;
+		for (int i = 0; i < 64; i++) {
+			dred_crumbs.mapped[i] = 0xFFFFFFFF;
+		}
+	}
+	Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList2> list2;
+	if (FAILED(p_list->QueryInterface(IID_PPV_ARGS(list2.GetAddressOf())))) {
+		return;
+	}
+	D3D12_WRITEBUFFERIMMEDIATE_PARAMETER param = { dred_crumbs.buffer->GetGPUVirtualAddress() + p_slot * 4, p_value };
+	D3D12_WRITEBUFFERIMMEDIATE_MODE mode = p_in ? D3D12_WRITEBUFFERIMMEDIATE_MODE_MARKER_IN : D3D12_WRITEBUFFERIMMEDIATE_MODE_MARKER_OUT;
+	list2->WriteBufferImmediate(1, &param, &mode);
+}
+
+static void dred_dump(ID3D12Device *p_device) { // DRED_DIAG
+	static bool done = false;
+	if (done || !dred_diag()) {
+		return;
+	}
+	done = true;
+	print_line(vformat("DRED_DIAG: device removed reason 0x%08x", (uint32_t)p_device->GetDeviceRemovedReason()));
+	if (dred_crumbs.mapped) {
+		uint32_t in = dred_crumbs.mapped[0], out = dred_crumbs.mapped[1];
+		printf("DRED_DIAG: last label reached %u (%s), last label finished %u (%s), %u labels recorded\n", in, in < dred_crumbs.names.size() ? dred_crumbs.names[in].utf8().get_data() : "-", out, out < dred_crumbs.names.size() ? dred_crumbs.names[out].utf8().get_data() : "-", dred_crumbs.names.size());
+		for (uint32_t i = (in > 12 ? in - 12 : 0); i < dred_crumbs.names.size() && i <= in + 4; i++) {
+			printf("DRED_DIAG: label %u %s%s\n", i, dred_crumbs.names[i].utf8().get_data(), i == in ? "   <= reached" : (i == out ? "   <= finished" : ""));
+		}
+		fflush(stdout);
+	}
+	ComPtr<ID3D12DeviceRemovedExtendedData1> dred;
+	if (!SUCCEEDED(p_device->QueryInterface(IID_PPV_ARGS(&dred)))) {
+		print_line("DRED_DIAG: no DRED interface");
+		return;
+	}
+	D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT1 crumbs = {};
+	HRESULT cr = dred->GetAutoBreadcrumbsOutput1(&crumbs);
+	print_line(vformat("DRED_DIAG: breadcrumbs 0x%08x", (uint32_t)cr));
+	if (SUCCEEDED(cr)) {
+		int nodes = 0;
+		for (const D3D12_AUTO_BREADCRUMB_NODE1 *node = crumbs.pHeadAutoBreadcrumbNode; node; node = node->pNext) {
+			uint32_t last = node->pLastBreadcrumbValue ? *node->pLastBreadcrumbValue : 0;
+			print_line(vformat("DRED_DIAG: node %d: %d of %d ops", nodes++, last, node->BreadcrumbCount));
+			if (last >= node->BreadcrumbCount && node->pNext) {
+				continue; // This command list finished.
+			}
+			print_line(vformat("DRED_DIAG: list %s queue %s: %d of %d ops done", node->pCommandListDebugNameW ? String::utf16((const char16_t *)node->pCommandListDebugNameW) : String("?"), node->pCommandQueueDebugNameW ? String::utf16((const char16_t *)node->pCommandQueueDebugNameW) : String("?"), last, node->BreadcrumbCount));
+			printf("DRED_DIAG: %u contexts\n", node->BreadcrumbContextsCount);
+			for (uint32_t c = 0; c < node->BreadcrumbContextsCount; c++) {
+				uint32_t at = node->pBreadcrumbContexts[c].BreadcrumbIndex;
+				if (at + 4000 >= last) {
+					printf("DRED_DIAG: label at %u: %s\n", at, String::utf16((const char16_t *)node->pBreadcrumbContexts[c].pContextString).utf8().get_data());
+				}
+			}
+			fflush(stdout);
+			const uint32_t ring = 65536;
+			uint32_t first = node->BreadcrumbCount > ring ? node->BreadcrumbCount - ring : 0;
+			int shown = 0;
+			uint32_t markers = 0;
+			for (int64_t k = MIN((int64_t)last, (int64_t)node->BreadcrumbCount - 1); k >= (int64_t)first && shown < 40; k--) {
+				D3D12_AUTO_BREADCRUMB_OP op = node->pCommandHistory[k % ring];
+				if (op == D3D12_AUTO_BREADCRUMB_OP_DRAWINDEXEDINSTANCED || op == D3D12_AUTO_BREADCRUMB_OP_DRAWINSTANCED) {
+					markers++; // Draws in a row.
+					continue;
+				}
+				const char16_t *label = nullptr;
+				for (uint32_t c = 0; c < node->BreadcrumbContextsCount; c++) {
+					if (node->pBreadcrumbContexts[c].BreadcrumbIndex == (uint32_t)k) {
+						label = (const char16_t *)node->pBreadcrumbContexts[c].pContextString;
+					}
+				}
+				printf("DRED_DIAG: before %lld %s %s (then %u draws)\n", (long long)k, dred_op_name(op).utf8().get_data(), label ? String::utf16(label).utf8().get_data() : "", markers);
+				fflush(stdout);
+				markers = 0;
+				shown++;
+			}
+			shown = 0;
+			for (uint32_t k = last; k < node->BreadcrumbCount && shown < 12; k++) {
+				D3D12_AUTO_BREADCRUMB_OP op = node->pCommandHistory[k % ring];
+				if (op != D3D12_AUTO_BREADCRUMB_OP_SETMARKER) {
+					printf("DRED_DIAG: after %u %s\n", k, dred_op_name(op).utf8().get_data());
+					fflush(stdout);
+					shown++;
+				}
+			}
+		}
+	}
+	D3D12_DRED_PAGE_FAULT_OUTPUT1 fault = {};
+	if (SUCCEEDED(dred->GetPageFaultAllocationOutput1(&fault))) {
+		print_line(vformat("DRED_DIAG: page fault VA 0x%x", (uint64_t)fault.PageFaultVA));
+		for (const D3D12_DRED_ALLOCATION_NODE1 *n = fault.pHeadExistingAllocationNode; n; n = n->pNext) {
+			print_line(vformat("DRED_DIAG: existing allocation %s type %d", n->ObjectNameW ? String::utf16((const char16_t *)n->ObjectNameW) : String("?"), (int)n->AllocationType));
+		}
+		for (const D3D12_DRED_ALLOCATION_NODE1 *n = fault.pHeadRecentFreedAllocationNode; n; n = n->pNext) {
+			print_line(vformat("DRED_DIAG: freed allocation %s type %d", n->ObjectNameW ? String::utf16((const char16_t *)n->ObjectNameW) : String("?"), (int)n->AllocationType));
+		}
+	}
+}
+
 RDD::BufferID RenderingDeviceDriverD3D12::buffer_create(uint64_t p_size, BitField<BufferUsageBits> p_usage, MemoryAllocationType p_allocation_type, uint64_t p_frames_drawn) {
 	uint32_t alignment = D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT; // 16 bytes is reasonable.
 	if (p_usage.has_flag(BUFFER_USAGE_UNIFORM_BIT)) {
@@ -946,6 +1081,9 @@ RDD::BufferID RenderingDeviceDriverD3D12::buffer_create(uint64_t p_size, BitFiel
 				IID_PPV_ARGS(buffer.GetAddressOf()));
 	}
 
+	if (!SUCCEEDED(res)) { // DRED_DIAG
+		dred_dump(device.Get());
+	}
 	ERR_FAIL_COND_V_MSG(!SUCCEEDED(res), BufferID(), "Can't create buffer of size: " + itos(p_size) + ", error " + vformat("0x%08ux", (uint64_t)res) + ".");
 
 	// Bookkeep.
@@ -5654,6 +5792,16 @@ void RenderingDeviceDriverD3D12::command_timestamp_write(CommandBufferID p_cmd_b
 }
 
 void RenderingDeviceDriverD3D12::command_begin_label(CommandBufferID p_cmd_buffer, const char *p_label_name, const Color &p_color) {
+	if (dred_diag()) { // DRED_DIAG
+		const CommandBufferInfo *cmd_buf_info = (const CommandBufferInfo *)p_cmd_buffer.id;
+		Char16String w = String::utf8(p_label_name).utf16();
+		cmd_buf_info->cmd_list->BeginEvent(1, w.get_data(), UINT((w.length() + 1) * sizeof(char16_t)));
+		uint32_t id = dred_crumbs.names.size();
+		dred_crumbs.names.push_back(String::utf8(p_label_name));
+		dred_crumbs.stack.push_back(id);
+		dred_crumb(device.Get(), cmd_buf_info->cmd_list.Get(), 0, id, true);
+		return;
+	}
 #ifdef PIX_ENABLED
 	const CommandBufferInfo *cmd_buf_info = (const CommandBufferInfo *)p_cmd_buffer.id;
 	PIXBeginEvent(cmd_buf_info->cmd_list.Get(), p_color.to_argb32(), p_label_name);
@@ -5661,6 +5809,16 @@ void RenderingDeviceDriverD3D12::command_begin_label(CommandBufferID p_cmd_buffe
 }
 
 void RenderingDeviceDriverD3D12::command_end_label(CommandBufferID p_cmd_buffer) {
+	if (dred_diag()) { // DRED_DIAG
+		const CommandBufferInfo *cbi = (const CommandBufferInfo *)p_cmd_buffer.id;
+		if (dred_crumbs.stack.size()) {
+			uint32_t id = dred_crumbs.stack[dred_crumbs.stack.size() - 1];
+			dred_crumbs.stack.resize(dred_crumbs.stack.size() - 1);
+			dred_crumb(device.Get(), cbi->cmd_list.Get(), 1, id, false);
+		}
+		cbi->cmd_list->EndEvent();
+		return;
+	}
 #ifdef PIX_ENABLED
 	const CommandBufferInfo *cmd_buf_info = (const CommandBufferInfo *)p_cmd_buffer.id;
 	PIXEndEvent(cmd_buf_info->cmd_list.Get());
@@ -6429,6 +6587,10 @@ Error RenderingDeviceDriverD3D12::_check_capabilities() {
 		format_capabilities.relaxed_casting_supported = options12.RelaxedFormatCastingSupported;
 		barrier_capabilities.enhanced_barriers_supported = options12.EnhancedBarriersSupported;
 	}
+	if (OS::get_singleton()->has_environment("PATINA_LEGACY_BARRIERS")) { // DRED_DIAG
+		barrier_capabilities.enhanced_barriers_supported = false;
+	}
+	print_line(vformat("DRED_DIAG: enhanced barriers %s", barrier_capabilities.enhanced_barriers_supported ? "on" : "off")); // DRED_DIAG
 
 	D3D12_FEATURE_DATA_D3D12_OPTIONS19 options19 = {};
 	res = device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS19, &options19, sizeof(options19));
