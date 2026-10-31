@@ -1562,6 +1562,12 @@ void fragment_shader(in SceneData scene_data) {
 
 		item_from = subgroupBroadcastFirst(subgroupMin(item_from));
 		item_to = subgroupBroadcastFirst(subgroupMax(item_to));
+		// Discarded pixels keep running as helper lanes on Direct3D 12, and the subgroup
+		// operations skip helper lanes: for a subgroup whose every pixel was discarded
+		// (alpha-scissored foliage) the values above are undefined, and the loops below
+		// ran until the GPU was reset. Keep the range inside the cluster.
+		item_to = min(item_to, implementation_data.max_cluster_element_count_div_32);
+		item_from = min(item_from, item_to);
 
 		for (uint i = item_from; i < item_to; i++) {
 			uint mask = cluster_buffer.data[cluster_decal_offset + i];
@@ -2054,6 +2060,12 @@ void fragment_shader(in SceneData scene_data) {
 
 		item_from = subgroupBroadcastFirst(subgroupMin(item_from));
 		item_to = subgroupBroadcastFirst(subgroupMax(item_to));
+		// Discarded pixels keep running as helper lanes on Direct3D 12, and the subgroup
+		// operations skip helper lanes: for a subgroup whose every pixel was discarded
+		// (alpha-scissored foliage) the values above are undefined, and the loops below
+		// ran until the GPU was reset. Keep the range inside the cluster.
+		item_to = min(item_to, implementation_data.max_cluster_element_count_div_32);
+		item_from = min(item_from, item_to);
 
 #ifdef LIGHT_ANISOTROPY_USED
 		// https://google.github.io/filament/Filament.html#lighting/imagebasedlights/anisotropy
@@ -2708,6 +2720,12 @@ void fragment_shader(in SceneData scene_data) {
 
 		item_from = subgroupBroadcastFirst(subgroupMin(item_from));
 		item_to = subgroupBroadcastFirst(subgroupMax(item_to));
+		// Discarded pixels keep running as helper lanes on Direct3D 12, and the subgroup
+		// operations skip helper lanes: for a subgroup whose every pixel was discarded
+		// (alpha-scissored foliage) the values above are undefined, and the loops below
+		// ran until the GPU was reset. Keep the range inside the cluster.
+		item_to = min(item_to, implementation_data.max_cluster_element_count_div_32);
+		item_from = min(item_from, item_to);
 
 		for (uint i = item_from; i < item_to; i++) {
 			uint mask = cluster_buffer.data[cluster_omni_offset + i];
@@ -2769,6 +2787,12 @@ void fragment_shader(in SceneData scene_data) {
 
 		item_from = subgroupBroadcastFirst(subgroupMin(item_from));
 		item_to = subgroupBroadcastFirst(subgroupMax(item_to));
+		// Discarded pixels keep running as helper lanes on Direct3D 12, and the subgroup
+		// operations skip helper lanes: for a subgroup whose every pixel was discarded
+		// (alpha-scissored foliage) the values above are undefined, and the loops below
+		// ran until the GPU was reset. Keep the range inside the cluster.
+		item_to = min(item_to, implementation_data.max_cluster_element_count_div_32);
+		item_from = min(item_from, item_to);
 
 		for (uint i = item_from; i < item_to; i++) {
 			uint mask = cluster_buffer.data[cluster_spot_offset + i];
@@ -2830,6 +2854,12 @@ void fragment_shader(in SceneData scene_data) {
 
 		item_from = subgroupBroadcastFirst(subgroupMin(item_from));
 		item_to = subgroupBroadcastFirst(subgroupMax(item_to));
+		// Discarded pixels keep running as helper lanes on Direct3D 12, and the subgroup
+		// operations skip helper lanes: for a subgroup whose every pixel was discarded
+		// (alpha-scissored foliage) the values above are undefined, and the loops below
+		// ran until the GPU was reset. Keep the range inside the cluster.
+		item_to = min(item_to, implementation_data.max_cluster_element_count_div_32);
+		item_from = min(item_from, item_to);
 
 		for (uint i = item_from; i < item_to; i++) {
 			uint mask = cluster_buffer.data[cluster_area_offset + i];
