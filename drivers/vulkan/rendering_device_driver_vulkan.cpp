@@ -2998,7 +2998,19 @@ void RenderingDeviceDriverVulkan::command_pipeline_barrier(
 		VectorView<BufferBarrier> p_buffer_barriers,
 		VectorView<TextureBarrier> p_texture_barriers,
 		VectorView<AccelerationStructureBarrier> p_acceleration_structure_barriers) {
-	VkMemoryBarrier *vk_memory_barriers = ALLOCA_ARRAY(VkMemoryBarrier, p_memory_barriers.size());
+	// The barrier arrays live on the heap, not the stack (as in the D3D12 driver): one group can hold
+	// a barrier for every buffer written in a frame, e.g. about 50,000 when a map's instancer fills its
+	// MultiMesh cells at once (2.8 MB), which overflowed the 1 MB stack of Android's render thread.
+	thread_local LocalVector<VkMemoryBarrier> memory_barrier_storage;
+	thread_local LocalVector<VkBufferMemoryBarrier> buffer_barrier_storage;
+	thread_local LocalVector<VkImageMemoryBarrier> image_barrier_storage;
+	thread_local LocalVector<VkBufferMemoryBarrier> accel_barrier_storage;
+	memory_barrier_storage.resize(p_memory_barriers.size());
+	buffer_barrier_storage.resize(p_buffer_barriers.size());
+	image_barrier_storage.resize(p_texture_barriers.size());
+	accel_barrier_storage.resize(p_acceleration_structure_barriers.size());
+
+	VkMemoryBarrier *vk_memory_barriers = memory_barrier_storage.ptr();
 	for (uint32_t i = 0; i < p_memory_barriers.size(); i++) {
 		vk_memory_barriers[i] = {};
 		vk_memory_barriers[i].sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
@@ -3006,7 +3018,7 @@ void RenderingDeviceDriverVulkan::command_pipeline_barrier(
 		vk_memory_barriers[i].dstAccessMask = _rd_to_vk_access_flags(p_memory_barriers[i].dst_access) & ~VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
 	}
 
-	VkBufferMemoryBarrier *vk_buffer_barriers = ALLOCA_ARRAY(VkBufferMemoryBarrier, p_buffer_barriers.size());
+	VkBufferMemoryBarrier *vk_buffer_barriers = buffer_barrier_storage.ptr();
 	for (uint32_t i = 0; i < p_buffer_barriers.size(); i++) {
 		vk_buffer_barriers[i] = {};
 		vk_buffer_barriers[i].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
@@ -3019,7 +3031,7 @@ void RenderingDeviceDriverVulkan::command_pipeline_barrier(
 		vk_buffer_barriers[i].size = p_buffer_barriers[i].size;
 	}
 
-	VkImageMemoryBarrier *vk_image_barriers = ALLOCA_ARRAY(VkImageMemoryBarrier, p_texture_barriers.size());
+	VkImageMemoryBarrier *vk_image_barriers = image_barrier_storage.ptr();
 	for (uint32_t i = 0; i < p_texture_barriers.size(); i++) {
 		const TextureInfo *tex_info = (const TextureInfo *)p_texture_barriers[i].texture.id;
 		vk_image_barriers[i] = {};
@@ -3043,7 +3055,7 @@ void RenderingDeviceDriverVulkan::command_pipeline_barrier(
 	VkPipelineStageFlags accel_src_stages = src_stage_flags;
 	VkPipelineStageFlags accel_dst_stages = dst_stage_flags;
 
-	VkBufferMemoryBarrier *vk_accel_barriers = ALLOCA_ARRAY(VkBufferMemoryBarrier, p_acceleration_structure_barriers.size());
+	VkBufferMemoryBarrier *vk_accel_barriers = accel_barrier_storage.ptr();
 	for (uint32_t i = 0; i < p_acceleration_structure_barriers.size(); i++) {
 		VkAccessFlags src_access = _rd_to_vk_access_flags(p_acceleration_structure_barriers[i].src_access);
 		VkAccessFlags dst_access = _rd_to_vk_access_flags(p_acceleration_structure_barriers[i].dst_access);
