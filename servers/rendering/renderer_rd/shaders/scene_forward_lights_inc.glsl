@@ -98,7 +98,10 @@ hvec3 f0_Clear_Coat_To_Surface(hvec3 f0) {
 	return clamp(f0 * (f0 * (half(0.941892) - half(0.263008) * f0) + half(0.346479)) - half(0.0285998), half(0.0), half(1.0));
 }
 
-void light_compute(hvec3 N, hvec3 L, hvec3 V, half A, hvec3 light_color, bool is_directional, half attenuation, hvec3 f0, half roughness, half metallic, half specular_amount, hvec3 albedo, inout half alpha, vec2 screen_uv, hvec3 energy_compensation,
+// attenuation is full precision: the inverse-square falloff of a distant omni or spot light (about 1e-3 at 30 m)
+// times a grazing N.L / PI (about 0.01) is below half's smallest normal value, so in half the light is flushed to
+// zero before its energy (light_color, about 1e4) is multiplied in. Each sum below multiplies in float and rounds once.
+void light_compute(hvec3 N, hvec3 L, hvec3 V, half A, hvec3 light_color, bool is_directional, float attenuation, hvec3 f0, half roughness, half metallic, half specular_amount, hvec3 albedo, inout half alpha, vec2 screen_uv, hvec3 energy_compensation,
 #ifdef LIGHT_BACKLIGHT_USED
 		hvec3 backlight,
 #endif
@@ -196,7 +199,7 @@ void light_compute(hvec3 N, hvec3 L, hvec3 V, half A, hvec3 light_color, bool is
 	half cc_attenuation = half(1.0);
 
 	// We skip checking on attenuation on directional lights to avoid a branch that is not as beneficial for directional lights as the other ones.
-	if (is_directional || attenuation > HALF_FLT_MIN) {
+	if (is_directional || attenuation > 0.0) {
 		half cNdotL = max(NdotL, half(0.0));
 #if defined(DIFFUSE_BURLEY) || defined(SPECULAR_SCHLICK_GGX) || defined(LIGHT_CLEARCOAT_USED)
 		hvec3 H = normalize(V + L);
@@ -214,7 +217,7 @@ void light_compute(hvec3 N, hvec3 L, hvec3 V, half A, hvec3 light_color, bool is
 		half Fr = mix(half(0.04), half(1.0), cLdotH5) * clearcoat;
 		cc_attenuation = half(1.0) - Fr;
 		half clearcoat_specular_brdf_NL = Dr * Gr * Fr * ccNdotL;
-		specular_light += clearcoat_specular_brdf_NL * light_color * attenuation * specular_amount;
+		specular_light += hvec3(vec3(light_color) * (float(clearcoat_specular_brdf_NL) * attenuation * float(specular_amount)));
 #endif // LIGHT_CLEARCOAT_USED
 
 		if (metallic < half(1.0)) {
@@ -241,10 +244,10 @@ void light_compute(hvec3 N, hvec3 L, hvec3 V, half A, hvec3 light_color, bool is
 			diffuse_brdf_NL = cNdotL * half(1.0 / M_PI);
 #endif
 
-			diffuse_light += light_color * diffuse_brdf_NL * attenuation * cc_attenuation;
+			diffuse_light += hvec3(vec3(light_color) * (float(diffuse_brdf_NL) * attenuation * float(cc_attenuation)));
 
 #if defined(LIGHT_BACKLIGHT_USED)
-			diffuse_light += light_color * (hvec3(1.0 / M_PI) - diffuse_brdf_NL) * backlight * attenuation;
+			diffuse_light += hvec3(vec3(light_color) * vec3((hvec3(1.0 / M_PI) - diffuse_brdf_NL) * backlight) * attenuation);
 #endif
 		}
 
@@ -260,7 +263,7 @@ void light_compute(hvec3 N, hvec3 L, hvec3 V, half A, hvec3 light_color, bool is
 			half mid = half(1.0) - roughness;
 			mid *= mid;
 			half intensity = smoothstep(mid - roughness * half(0.5), mid + roughness * half(0.5), RdotV) * mid;
-			diffuse_light += light_color * intensity * attenuation * specular_amount; // write to diffuse_light, as in toon shading you generally want no reflection
+			diffuse_light += hvec3(vec3(light_color) * (float(intensity) * attenuation * float(specular_amount))); // write to diffuse_light, as in toon shading you generally want no reflection
 
 #elif defined(SPECULAR_DISABLED)
 			// Do nothing.
@@ -289,12 +292,12 @@ void light_compute(hvec3 N, hvec3 L, hvec3 V, half A, hvec3 light_color, bool is
 			half f90 = clamp(dot(f0, hvec3(50.0 * 0.33)), metallic, half(1.0));
 			hvec3 F = f0 + (f90 - f0) * cLdotH5;
 			hvec3 specular_brdf_NL = energy_compensation * cNdotL * D * F * G;
-			specular_light += specular_brdf_NL * light_color * attenuation * cc_attenuation * specular_amount;
+			specular_light += hvec3(vec3(specular_brdf_NL) * vec3(light_color) * (attenuation * float(cc_attenuation) * float(specular_amount)));
 #endif
 		}
 
 #ifdef USE_SHADOW_TO_OPACITY
-		alpha = min(alpha, clamp(half(1.0 - attenuation), half(0.0), half(1.0)));
+		alpha = min(alpha, half(clamp(1.0 - attenuation, 0.0, 1.0)));
 #endif
 	}
 #endif // LIGHT_CODE_USED
@@ -460,13 +463,15 @@ half sample_directional_soft_shadow(texture2D shadow, vec3 pssm_coord, vec2 tex_
 
 #endif // SHADOWS_DISABLED
 
-half get_omni_attenuation(float distance, float inv_range, float decay) {
+// Full precision: an inverse-square falloff drops below half's smallest normal value (6.1e-5) at about 128 m, and
+// light_compute multiplies it by N.L before the light's energy.
+float get_omni_attenuation(float distance, float inv_range, float decay) {
 	float nd = distance * inv_range;
 	nd *= nd;
 	nd *= nd; // nd^4
 	nd = max(1.0 - nd, 0.0);
 	nd *= nd; // nd^2
-	return half(nd * pow(max(distance, 0.0001), -decay));
+	return nd * pow(max(distance, 0.0001), -decay);
 }
 
 void light_process_omni(uint idx, vec3 vertex, hvec3 eye_vec, hvec3 normal, vec3 vertex_ddx, vec3 vertex_ddy, hvec3 f0, half roughness, half metallic, float taa_frame_count, hvec3 albedo, inout half alpha, vec2 screen_uv, hvec3 energy_compensation,
@@ -492,7 +497,7 @@ void light_process_omni(uint idx, vec3 vertex, hvec3 eye_vec, hvec3 normal, vec3
 	// Omni light attenuation.
 	vec3 light_rel_vec = omni_lights.data[idx].position - vertex;
 	float light_length = length(light_rel_vec);
-	half omni_attenuation = get_omni_attenuation(light_length, omni_lights.data[idx].inv_radius, omni_lights.data[idx].attenuation);
+	float omni_attenuation = get_omni_attenuation(light_length, omni_lights.data[idx].inv_radius, omni_lights.data[idx].attenuation);
 
 	// Compute size.
 	half size = half(0.0);
@@ -505,7 +510,7 @@ void light_process_omni(uint idx, vec3 vertex, hvec3 eye_vec, hvec3 normal, vec3
 	half shadow = half(1.0);
 #ifndef SHADOWS_DISABLED
 	// Omni light shadow.
-	if (omni_attenuation > HALF_FLT_MIN && omni_lights.data[idx].shadow_opacity > 0.001) {
+	if (omni_attenuation > 0.0 && omni_lights.data[idx].shadow_opacity > 0.001) {
 		// there is a shadowmap
 		vec2 texel_size = scene_data_block.data.shadow_atlas_pixel_size;
 		vec4 base_uv_rect = omni_lights.data[idx].atlas_rect;
@@ -638,7 +643,7 @@ void light_process_omni(uint idx, vec3 vertex, hvec3 eye_vec, hvec3 normal, vec3
 
 #ifdef LIGHT_TRANSMITTANCE_USED
 	half transmittance_z = transmittance_depth; //no transmittance by default
-	transmittance_color.a *= omni_attenuation;
+	transmittance_color.a *= half(omni_attenuation);
 #ifndef SHADOWS_DISABLED
 	if (omni_lights.data[idx].shadow_opacity > 0.001) {
 		// Redo shadowmapping, but shrink the model a bit to avoid artifacts.
@@ -735,7 +740,7 @@ void light_process_omni(uint idx, vec3 vertex, hvec3 eye_vec, hvec3 normal, vec3
 	}
 
 	vec3 light_rel_vec_norm = light_rel_vec / light_length;
-	light_compute(normal, hvec3(light_rel_vec_norm), eye_vec, size, hvec3(color), false, omni_attenuation * shadow, f0, roughness, metallic, half(omni_lights.data[idx].specular_amount), albedo, alpha, screen_uv, energy_compensation,
+	light_compute(normal, hvec3(light_rel_vec_norm), eye_vec, size, hvec3(color), false, omni_attenuation * float(shadow), f0, roughness, metallic, half(omni_lights.data[idx].specular_amount), albedo, alpha, screen_uv, energy_compensation,
 #ifdef LIGHT_BACKLIGHT_USED
 			backlight,
 #endif
@@ -746,7 +751,7 @@ void light_process_omni(uint idx, vec3 vertex, hvec3 eye_vec, hvec3 normal, vec3
 			transmittance_z,
 #endif
 #ifdef LIGHT_RIM_USED
-			rim * omni_attenuation, rim_tint,
+			half(float(rim) * omni_attenuation), rim_tint,
 #endif
 #ifdef LIGHT_CLEARCOAT_USED
 			clearcoat, clearcoat_roughness, vertex_normal,
@@ -795,14 +800,14 @@ void light_process_spot(uint idx, vec3 vertex, hvec3 eye_vec, hvec3 normal, vec3
 	vec3 light_rel_vec = spot_lights.data[idx].position - vertex;
 	float light_length = length(light_rel_vec);
 	hvec3 light_rel_vec_norm = hvec3(light_rel_vec / light_length);
-	half spot_attenuation = get_omni_attenuation(light_length, spot_lights.data[idx].inv_radius, spot_lights.data[idx].attenuation);
+	float spot_attenuation = get_omni_attenuation(light_length, spot_lights.data[idx].inv_radius, spot_lights.data[idx].attenuation);
 	vec3 spot_dir = spot_lights.data[idx].direction;
 	float cone_angle = spot_lights.data[idx].cone_angle;
 	float scos = max(dot(-vec3(light_rel_vec_norm), spot_dir), cone_angle);
 
 	// This conversion to a highp float is crucial to prevent light leaking due to precision errors.
 	float spot_rim = max(1e-4, (1.0 - scos) / (1.0 - cone_angle));
-	spot_attenuation *= half(1.0 - pow(spot_rim, spot_lights.data[idx].cone_attenuation));
+	spot_attenuation *= 1.0 - pow(spot_rim, spot_lights.data[idx].cone_attenuation);
 
 	// Compute size.
 	half size = half(0.0);
@@ -815,7 +820,7 @@ void light_process_spot(uint idx, vec3 vertex, hvec3 eye_vec, hvec3 normal, vec3
 	half shadow = half(1.0);
 #ifndef SHADOWS_DISABLED
 	// Spot light shadow.
-	if (spot_attenuation > HALF_FLT_MIN && spot_lights.data[idx].shadow_opacity > 0.001) {
+	if (spot_attenuation > 0.0 && spot_lights.data[idx].shadow_opacity > 0.001) {
 		vec3 normal_bias = vec3(normal) * light_length * spot_lights.data[idx].shadow_normal_bias * (1.0 - abs(dot(normal, light_rel_vec_norm)));
 
 		//there is a shadowmap
@@ -892,7 +897,7 @@ void light_process_spot(uint idx, vec3 vertex, hvec3 eye_vec, hvec3 normal, vec3
 
 #ifdef LIGHT_TRANSMITTANCE_USED
 	half transmittance_z = transmittance_depth;
-	transmittance_color.a *= spot_attenuation;
+	transmittance_color.a *= half(spot_attenuation);
 #ifndef SHADOWS_DISABLED
 	if (spot_lights.data[idx].shadow_opacity > 0.001) {
 		vec4 splane = (spot_lights.data[idx].shadow_matrix * vec4(vertex - vec3(normal) * spot_lights.data[idx].transmittance_bias, 1.0));
@@ -937,7 +942,7 @@ void light_process_spot(uint idx, vec3 vertex, hvec3 eye_vec, hvec3 normal, vec3
 		}
 	}
 
-	light_compute(normal, hvec3(light_rel_vec_norm), eye_vec, size, hvec3(color), false, spot_attenuation * shadow, f0, roughness, metallic, half(spot_lights.data[idx].specular_amount), albedo, alpha, screen_uv, energy_compensation,
+	light_compute(normal, hvec3(light_rel_vec_norm), eye_vec, size, hvec3(color), false, spot_attenuation * float(shadow), f0, roughness, metallic, half(spot_lights.data[idx].specular_amount), albedo, alpha, screen_uv, energy_compensation,
 #ifdef LIGHT_BACKLIGHT_USED
 			backlight,
 #endif
@@ -948,7 +953,7 @@ void light_process_spot(uint idx, vec3 vertex, hvec3 eye_vec, hvec3 normal, vec3
 			transmittance_z,
 #endif
 #ifdef LIGHT_RIM_USED
-			rim * spot_attenuation, rim_tint,
+			half(float(rim) * spot_attenuation), rim_tint,
 #endif
 #ifdef LIGHT_CLEARCOAT_USED
 			clearcoat, clearcoat_roughness, vertex_normal,
@@ -1007,7 +1012,7 @@ void light_process_area(uint idx, vec3 vertex, hvec3 eye_vec, hvec3 normal, vec3
 	half dist = length(closest_point_local_to_light - pos_local_to_light);
 
 	half light_length = max(half(0.0), dist);
-	half light_attenuation_raw = get_omni_attenuation(float(light_length), area_lights.data[idx].inv_radius, area_lights.data[idx].attenuation);
+	half light_attenuation_raw = half(get_omni_attenuation(float(light_length), area_lights.data[idx].inv_radius, area_lights.data[idx].attenuation));
 	half light_attenuation_ltc = light_attenuation_raw * half(light_length * light_length); // solid angle already decreases by inverse square, so attenuation power is 2.0 by default -> subtract 2.0
 	half shadow = half(1.0);
 
