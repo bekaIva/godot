@@ -280,11 +280,25 @@ public:
 
 	virtual void voxel_gi_set_quality(RSE::VoxelGIQuality) = 0;
 
+	// A directional light's cascade kept from frame to frame (DirectionalLight3D
+	// shadow cache): its still casters drawn once into a texture of their own
+	// and copied into the atlas each frame, the rest drawn over the copy.
+	enum DirectionalShadowCacheMode {
+		DIRECTIONAL_SHADOW_CACHE_NONE, // Drawn as usual.
+		DIRECTIONAL_SHADOW_CACHE_DRAW, // cache_instances drawn into the cache, then as REUSE.
+		DIRECTIONAL_SHADOW_CACHE_REUSE, // The cache copied, instances drawn over it.
+	};
+
 	struct RenderShadowData {
 		RID light;
 		int pass = 0;
 		PagedArray<RenderGeometryInstance *> instances;
+		DirectionalShadowCacheMode cache_mode = DIRECTIONAL_SHADOW_CACHE_NONE;
+		PagedArray<RenderGeometryInstance *> cache_instances;
 	};
+
+	// Whether render_scene() takes cached directional shadow cascades.
+	virtual bool directional_shadow_cache_is_supported() const { return false; }
 
 	struct RenderSDFGIData {
 		int region = 0;

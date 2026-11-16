@@ -479,6 +479,12 @@ public:
 
 		uint64_t last_frame_pass;
 
+		// Directional shadow cache: the frame this instance last moved or
+		// changed shape (it is drawn into a cache once it has stayed still for
+		// a while), and the cache bake of each cascade it was drawn into.
+		uint64_t shadow_cache_changed_frame = 0;
+		uint32_t shadow_cache_bake[RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES] = {};
+
 		uint64_t version; // changes to this, and changes to base increase version
 
 		InstanceBaseData *base_data = nullptr;
@@ -705,6 +711,27 @@ public:
 		uint32_t max_sdfgi_cascade = 2;
 		uint32_t cull_mask = 0xFFFFFFFF;
 
+		// A directional light's cached cascades: drawn round the camera's
+		// place when baked, to a sphere reaching past the cascade's farthest
+		// point by the cache margin, with the light's basis of that moment.
+		struct ShadowCacheCascade {
+			bool valid = false;
+			uint32_t bake_id = 0;
+			Vector3 center;
+			real_t radius = 0;
+			int texture_size = 0;
+			int splits = 0;
+			Vector<Plane> frustum_planes;
+			Projection projection;
+			Transform3D transform;
+			real_t zfar = 0;
+			real_t shadow_texel_size = 0;
+			real_t bias_scale = 0;
+			real_t range_begin = 0;
+			Vector2 uv_scale;
+		} shadow_cache[RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES];
+		uint64_t shadow_cache_requests_seen = 0;
+
 	private:
 		// Instead of a single dirty flag, we maintain a count
 		// so that we can detect lights that are being made dirty
@@ -896,6 +923,8 @@ public:
 
 		struct DirectionalShadow {
 			PagedArray<RenderGeometryInstance *> cascade_geometry_instances[RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES];
+			// A cached cascade's still casters, when it is baked.
+			PagedArray<RenderGeometryInstance *> cascade_cache_instances[RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES];
 		} directional_shadows[RendererSceneRender::MAX_DIRECTIONAL_LIGHTS];
 
 		PagedArray<RenderGeometryInstance *> sdfgi_region_geometry_instances[SDFGI_MAX_CASCADES * SDFGI_MAX_REGIONS_PER_CASCADE];
@@ -914,6 +943,7 @@ public:
 			for (int i = 0; i < RendererSceneRender::MAX_DIRECTIONAL_LIGHTS; i++) {
 				for (int j = 0; j < RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES; j++) {
 					directional_shadows[i].cascade_geometry_instances[j].clear();
+					directional_shadows[i].cascade_cache_instances[j].clear();
 				}
 			}
 
@@ -939,6 +969,7 @@ public:
 			for (int i = 0; i < RendererSceneRender::MAX_DIRECTIONAL_LIGHTS; i++) {
 				for (int j = 0; j < RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES; j++) {
 					directional_shadows[i].cascade_geometry_instances[j].reset();
+					directional_shadows[i].cascade_cache_instances[j].reset();
 				}
 			}
 
@@ -965,6 +996,7 @@ public:
 			for (int i = 0; i < RendererSceneRender::MAX_DIRECTIONAL_LIGHTS; i++) {
 				for (int j = 0; j < RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES; j++) {
 					directional_shadows[i].cascade_geometry_instances[j].merge_unordered(p_cull_result.directional_shadows[i].cascade_geometry_instances[j]);
+					directional_shadows[i].cascade_cache_instances[j].merge_unordered(p_cull_result.directional_shadows[i].cascade_cache_instances[j]);
 				}
 			}
 
@@ -990,6 +1022,7 @@ public:
 			for (int i = 0; i < RendererSceneRender::MAX_DIRECTIONAL_LIGHTS; i++) {
 				for (int j = 0; j < RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES; j++) {
 					directional_shadows[i].cascade_geometry_instances[j].set_page_pool(p_geometry_instance_pool);
+					directional_shadows[i].cascade_cache_instances[j].set_page_pool(p_geometry_instance_pool);
 				}
 			}
 
@@ -1029,6 +1062,8 @@ public:
 	virtual void instance_set_layer_mask(RID p_instance, uint32_t p_mask);
 	virtual void instance_set_pivot_data(RID p_instance, float p_sorting_offset, bool p_use_aabb_center);
 	virtual void instance_set_transform(RID p_instance, const Transform3D &p_transform);
+	virtual void light_directional_set_shadow_cache(RID p_light, int p_from_split, float p_margin);
+	virtual void light_directional_update_shadow_cache(RID p_light);
 	virtual void instance_attach_object_instance_id(RID p_instance, ObjectID p_id);
 	virtual void instance_set_blend_shape_weight(RID p_instance, int p_shape, float p_weight);
 	virtual void instance_set_surface_override_material(RID p_instance, int p_surface, RID p_material);
@@ -1079,7 +1114,29 @@ public:
 	_FORCE_INLINE_ void _update_instance_lightmap_captures(Instance *p_instance) const;
 	void _unpair_instance(Instance *p_instance);
 
-	void _light_instance_setup_directional_shadow(int p_shadow_index, Instance *p_instance, const Transform3D p_cam_transform, const Projection &p_cam_projection, bool p_cam_orthogonal, bool p_cam_vaspect);
+	void _light_instance_setup_directional_shadow(int p_shadow_index, Instance *p_instance, const Transform3D p_cam_transform, const Projection &p_cam_projection, bool p_cam_orthogonal, bool p_cam_vaspect, bool p_cache_allowed = false);
+
+	// Directional shadow cache (DirectionalLight3D directional_shadow_cache_from_split).
+	struct ShadowCacheSettings {
+		int from_split = 0; // The first cached cascade; 0: none.
+		float margin = 0.2;
+		uint64_t requests = 0; // update_shadow_cache() calls.
+	};
+	HashMap<RID, ShadowCacheSettings> shadow_cache_settings;
+	// Frames an instance must stay still before it is drawn into a cache.
+	static constexpr uint64_t SHADOW_CACHE_SETTLE_FRAMES = 30;
+	// Set when an instance drawn into a cache moves, changes or leaves: every
+	// cache is baked again (its shadow would stay where it was).
+	mutable bool shadow_cache_dirty = false;
+	uint32_t shadow_cache_bake_counter = 0;
+	_FORCE_INLINE_ void _shadow_cache_instance_changed(Instance *p_instance) const {
+		for (uint32_t &bake : p_instance->shadow_cache_bake) {
+			if (bake != 0) {
+				shadow_cache_dirty = true;
+				bake = 0;
+			}
+		}
+	}
 
 	_FORCE_INLINE_ bool _light_instance_update_shadow(Instance *p_instance, const Transform3D p_cam_transform, const Projection &p_cam_projection, bool p_cam_orthogonal, bool p_cam_vaspect, RID p_shadow_atlas, Scenario *p_scenario, float p_screen_mesh_lod_threshold, uint32_t p_visible_layers = 0xFFFFFF);
 
@@ -1101,6 +1158,9 @@ public:
 				real_t bias_scale;
 				real_t range_begin;
 				Vector2 uv_scale;
+
+				RendererSceneRender::DirectionalShadowCacheMode cache_mode = RendererSceneRender::DIRECTIONAL_SHADOW_CACHE_NONE;
+				uint32_t cache_bake_id = 0;
 
 			} cascades[RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES]; //max 4 cascades
 			uint32_t cascade_count;
@@ -1148,6 +1208,7 @@ public:
 		const RendererSceneOcclusionCull::HZBuffer *occlusion_buffer;
 		const Projection *camera_matrix;
 		uint64_t visibility_viewport_mask;
+		uint64_t frame = 0;
 	};
 
 	void _scene_cull_threaded(uint32_t p_thread, CullData *cull_data);
