@@ -498,6 +498,11 @@ void light_process_omni(uint idx, vec3 vertex, hvec3 eye_vec, hvec3 normal, vec3
 	vec3 light_rel_vec = omni_lights.data[idx].position - vertex;
 	float light_length = length(light_rel_vec);
 	float omni_attenuation = get_omni_attenuation(light_length, omni_lights.data[idx].inv_radius, omni_lights.data[idx].attenuation);
+	// Past its range the light adds nothing here: skip its shadow and shading
+	// (a light's volume in the clusters covers far more than it lights).
+	if (omni_attenuation <= 0.0) {
+		return;
+	}
 
 	// Compute size.
 	half size = half(0.0);
@@ -808,6 +813,12 @@ void light_process_spot(uint idx, vec3 vertex, hvec3 eye_vec, hvec3 normal, vec3
 	// This conversion to a highp float is crucial to prevent light leaking due to precision errors.
 	float spot_rim = max(1e-4, (1.0 - scos) / (1.0 - cone_angle));
 	spot_attenuation *= 1.0 - pow(spot_rim, spot_lights.data[idx].cone_attenuation);
+	// Outside its cone or past its range the light adds nothing here: skip its
+	// shadow and shading. A wide spot light is clustered as a whole sphere, so
+	// most pixels it is listed for lie outside its cone.
+	if (spot_attenuation <= 0.0) {
+		return;
+	}
 
 	// Compute size.
 	half size = half(0.0);
@@ -815,6 +826,36 @@ void light_process_spot(uint idx, vec3 vertex, hvec3 eye_vec, hvec3 normal, vec3
 		half t = half(spot_lights.data[idx].size / max(0.001, light_length));
 		size = half(1.0) / sqrt(half(1.0) + t * t);
 		size = max(half(1.0) - size, half(0.0));
+	}
+
+	vec3 color = spot_lights.data[idx].color;
+
+	if (sc_use_light_projector() && spot_lights.data[idx].projector_rect != vec4(0.0)) {
+		vec4 splane = (spot_lights.data[idx].shadow_matrix * vec4(vertex, 1.0));
+		splane /= splane.w;
+
+		vec2 proj_uv = splane.xy * spot_lights.data[idx].projector_rect.zw;
+
+		if (sc_projector_use_mipmaps()) {
+			//ensure we have proper mipmaps
+			vec4 splane_ddx = (spot_lights.data[idx].shadow_matrix * vec4(vertex + vertex_ddx, 1.0));
+			splane_ddx /= splane_ddx.w;
+			vec2 proj_uv_ddx = splane_ddx.xy * spot_lights.data[idx].projector_rect.zw - proj_uv;
+
+			vec4 splane_ddy = (spot_lights.data[idx].shadow_matrix * vec4(vertex + vertex_ddy, 1.0));
+			splane_ddy /= splane_ddy.w;
+			vec2 proj_uv_ddy = splane_ddy.xy * spot_lights.data[idx].projector_rect.zw - proj_uv;
+
+			vec4 proj = textureGrad(sampler2D(decal_atlas_srgb, light_projector_sampler), proj_uv + spot_lights.data[idx].projector_rect.xy, proj_uv_ddx, proj_uv_ddy);
+			color *= proj.rgb * proj.a;
+		} else {
+			vec4 proj = textureLod(sampler2D(decal_atlas_srgb, light_projector_sampler), proj_uv + spot_lights.data[idx].projector_rect.xy, 0.0);
+			color *= proj.rgb * proj.a;
+		}
+	}
+	// Where the projected pattern is black the light adds nothing here.
+	if (color == vec3(0.0)) {
+		return;
 	}
 
 	half shadow = half(1.0);
@@ -893,8 +934,6 @@ void light_process_spot(uint idx, vec3 vertex, hvec3 eye_vec, hvec3 normal, vec3
 	}
 #endif // SHADOWS_DISABLED
 
-	vec3 color = spot_lights.data[idx].color;
-
 #ifdef LIGHT_TRANSMITTANCE_USED
 	half transmittance_z = transmittance_depth;
 	transmittance_color.a *= half(spot_attenuation);
@@ -917,30 +956,6 @@ void light_process_spot(uint idx, vec3 vertex, hvec3 eye_vec, hvec3 normal, vec3
 	}
 #endif // !SHADOWS_DISABLED
 #endif // LIGHT_TRANSMITTANCE_USED
-
-	if (sc_use_light_projector() && spot_lights.data[idx].projector_rect != vec4(0.0)) {
-		vec4 splane = (spot_lights.data[idx].shadow_matrix * vec4(vertex, 1.0));
-		splane /= splane.w;
-
-		vec2 proj_uv = splane.xy * spot_lights.data[idx].projector_rect.zw;
-
-		if (sc_projector_use_mipmaps()) {
-			//ensure we have proper mipmaps
-			vec4 splane_ddx = (spot_lights.data[idx].shadow_matrix * vec4(vertex + vertex_ddx, 1.0));
-			splane_ddx /= splane_ddx.w;
-			vec2 proj_uv_ddx = splane_ddx.xy * spot_lights.data[idx].projector_rect.zw - proj_uv;
-
-			vec4 splane_ddy = (spot_lights.data[idx].shadow_matrix * vec4(vertex + vertex_ddy, 1.0));
-			splane_ddy /= splane_ddy.w;
-			vec2 proj_uv_ddy = splane_ddy.xy * spot_lights.data[idx].projector_rect.zw - proj_uv;
-
-			vec4 proj = textureGrad(sampler2D(decal_atlas_srgb, light_projector_sampler), proj_uv + spot_lights.data[idx].projector_rect.xy, proj_uv_ddx, proj_uv_ddy);
-			color *= proj.rgb * proj.a;
-		} else {
-			vec4 proj = textureLod(sampler2D(decal_atlas_srgb, light_projector_sampler), proj_uv + spot_lights.data[idx].projector_rect.xy, 0.0);
-			color *= proj.rgb * proj.a;
-		}
-	}
 
 	light_compute(normal, hvec3(light_rel_vec_norm), eye_vec, size, hvec3(color), false, spot_attenuation * float(shadow), f0, roughness, metallic, half(spot_lights.data[idx].specular_amount), albedo, alpha, screen_uv, energy_compensation,
 #ifdef LIGHT_BACKLIGHT_USED
