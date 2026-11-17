@@ -11,9 +11,25 @@
 		<link title="3D lights and shadows">$DOCS_URL/tutorials/3d/lights_and_shadows.html#directional-light</link>
 		<link title="Faking global illumination">$DOCS_URL/tutorials/3d/global_illumination/faking_global_illumination.html</link>
 	</tutorials>
+	<methods>
+		<method name="update_shadow_cache">
+			<return type="void" />
+			<description>
+				Draws the cached shadow splits again on the next frame (see [member directional_shadow_cache_from_split]). Call it when the light has turned far enough for its kept shadows to show it, for example every few minutes of a day cycle: until then they keep the light's direction of the moment they were drawn.
+			</description>
+		</method>
+	</methods>
 	<members>
 		<member name="directional_shadow_blend_splits" type="bool" setter="set_blend_splits" getter="is_blend_splits_enabled" default="false">
 			If [code]true[/code], shadow detail is sacrificed in exchange for smoother transitions between splits. Enabling shadow blend splitting also has a moderate performance cost. This is ignored when [member directional_shadow_mode] is [constant SHADOW_ORTHOGONAL].
+		</member>
+		<member name="directional_shadow_cache_from_split" type="int" setter="set_shadow_cache_from_split" getter="get_shadow_cache_from_split" default="0">
+			The first shadow split kept from frame to frame instead of being drawn every frame; [code]0[/code] keeps none. A kept split is drawn round the camera's position rather than its view, reaching [member directional_shadow_cache_margin] farther than the split's farthest point, so turning the camera keeps it. It is drawn again when the camera nears its edge, when anything drawn into it moves, changes shape or is removed, and when [method update_shadow_cache] is called. Only geometry that has stayed still for a moment is drawn into it; everything else (moving bodies, characters, anything animated) is drawn over it every frame, so its shadow never lags.
+			A kept split holds the light's direction of the moment it was drawn: call [method update_shadow_cache] as the light turns. Wind and other vertex animation is held still in it.
+			[b]Note:[/b] Only supported by the Forward+ renderer, with [constant SHADOW_PARALLEL_2_SPLITS] or [constant SHADOW_PARALLEL_4_SPLITS], for a split after the first. Other renderers draw every split every frame.
+		</member>
+		<member name="directional_shadow_cache_margin" type="float" setter="set_shadow_cache_margin" getter="get_shadow_cache_margin" default="0.2">
+			How much farther than its farthest point a kept shadow split reaches, as a share of that distance (see [member directional_shadow_cache_from_split]). Larger margins let the camera move farther before the split is drawn again, at the cost of larger shadow texels in it.
 		</member>
 		<member name="directional_shadow_fade_start" type="float" setter="set_param" getter="get_param" default="0.8">
 			Proportion of [member directional_shadow_max_distance] at which point the shadow starts to fade. At [member directional_shadow_max_distance], the shadow will disappear. The default value is a balance between smooth fading and distant shadow visibility. If the camera moves fast and the [member directional_shadow_max_distance] is low, consider lowering [member directional_shadow_fade_start] below [code]0.8[/code] to make shadow transitions less noticeable. On the other hand, if you tuned [member directional_shadow_max_distance] to cover the entire scene, you can set [member directional_shadow_fade_start] to [code]1.0[/code] to prevent the shadow from fading in the distance (it will suddenly cut off instead).

@@ -459,6 +459,9 @@ private:
 			bool flip_cull;
 
 			uint32_t uniform_buffer_index;
+
+			// Set: no draws, this cached cascade copied into the rect instead.
+			RID copy_source;
 		};
 
 		LocalVector<ShadowPass> shadow_passes;
@@ -799,6 +802,23 @@ private:
 	void _render_shadow_process();
 	void _render_shadow_end();
 
+	/* Directional shadow cache: a cached cascade's still casters drawn into
+	 * a texture of their own when baked, copied into the atlas every frame,
+	 * the rest drawn over the copy (RendererSceneCull, DirectionalLight3D
+	 * directional_shadow_cache_from_split). */
+
+	struct DirectionalShadowCache {
+		RID texture;
+		RID framebuffer;
+		Size2i size;
+		RD::DataFormat format = RD::DATA_FORMAT_MAX;
+		uint64_t used_frame = 0;
+	};
+	HashMap<uint64_t, DirectionalShadowCache> directional_shadow_caches; // By light instance and cascade.
+	Rect2i _directional_shadow_atlas_rect(RID p_light, int p_pass);
+	void _render_directional_shadow_cached(const RenderShadowData &p_shadow, float p_lod_distance_multiplier, float p_screen_mesh_lod_threshold, RenderingServerTypes::RenderInfo *p_render_info, const Size2i &p_viewport_size, const Transform3D &p_main_cam_transform);
+	void _free_directional_shadow_caches(bool p_unused_only);
+
 	/* Render Scene */
 	void _process_ssao(Ref<RenderSceneBuffersRD> p_render_buffers, RID p_environment, const RID *p_normal_buffers, const Projection *p_projections);
 	void _process_ssil(Ref<RenderSceneBuffersRD> p_render_buffers, RID p_environment, const RID *p_normal_buffers, const Projection *p_projections, const Transform3D &p_transform);
@@ -875,6 +895,8 @@ public:
 	virtual bool free(RID p_rid) override;
 
 	virtual void update() override;
+
+	virtual bool directional_shadow_cache_is_supported() const override { return true; }
 
 	RenderForwardClustered();
 	~RenderForwardClustered();

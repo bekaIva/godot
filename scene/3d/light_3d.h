@@ -178,6 +178,8 @@ private:
 	bool blend_splits;
 	ShadowMode shadow_mode;
 	SkyMode sky_mode = SKY_MODE_LIGHT_AND_SKY;
+	int shadow_cache_from_split = 0;
+	float shadow_cache_margin = 0.2;
 
 protected:
 	static void _bind_methods();
@@ -192,6 +194,12 @@ public:
 
 	void set_sky_mode(SkyMode p_mode);
 	SkyMode get_sky_mode() const;
+
+	void set_shadow_cache_from_split(int p_split);
+	int get_shadow_cache_from_split() const;
+	void set_shadow_cache_margin(float p_margin);
+	float get_shadow_cache_margin() const;
+	void update_shadow_cache();
 
 	DirectionalLight3D();
 };

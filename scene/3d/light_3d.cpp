@@ -556,6 +556,28 @@ DirectionalLight3D::SkyMode DirectionalLight3D::get_sky_mode() const {
 	return sky_mode;
 }
 
+void DirectionalLight3D::set_shadow_cache_from_split(int p_split) {
+	shadow_cache_from_split = CLAMP(p_split, 0, 3);
+	RS::get_singleton()->light_directional_set_shadow_cache(light, shadow_cache_from_split, shadow_cache_margin);
+}
+
+int DirectionalLight3D::get_shadow_cache_from_split() const {
+	return shadow_cache_from_split;
+}
+
+void DirectionalLight3D::set_shadow_cache_margin(float p_margin) {
+	shadow_cache_margin = MAX(p_margin, 0.01f);
+	RS::get_singleton()->light_directional_set_shadow_cache(light, shadow_cache_from_split, shadow_cache_margin);
+}
+
+float DirectionalLight3D::get_shadow_cache_margin() const {
+	return shadow_cache_margin;
+}
+
+void DirectionalLight3D::update_shadow_cache() {
+	RS::get_singleton()->light_directional_update_shadow_cache(light);
+}
+
 void DirectionalLight3D::_validate_property(PropertyInfo &p_property) const {
 	if (Engine::get_singleton()->is_editor_hint()) {
 		if (shadow_mode == SHADOW_ORTHOGONAL && (p_property.name == "directional_shadow_split_1" || p_property.name == "directional_shadow_blend_splits")) {
@@ -588,6 +610,12 @@ void DirectionalLight3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_sky_mode", "mode"), &DirectionalLight3D::set_sky_mode);
 	ClassDB::bind_method(D_METHOD("get_sky_mode"), &DirectionalLight3D::get_sky_mode);
 
+	ClassDB::bind_method(D_METHOD("set_shadow_cache_from_split", "split"), &DirectionalLight3D::set_shadow_cache_from_split);
+	ClassDB::bind_method(D_METHOD("get_shadow_cache_from_split"), &DirectionalLight3D::get_shadow_cache_from_split);
+	ClassDB::bind_method(D_METHOD("set_shadow_cache_margin", "margin"), &DirectionalLight3D::set_shadow_cache_margin);
+	ClassDB::bind_method(D_METHOD("get_shadow_cache_margin"), &DirectionalLight3D::get_shadow_cache_margin);
+	ClassDB::bind_method(D_METHOD("update_shadow_cache"), &DirectionalLight3D::update_shadow_cache);
+
 	ADD_GROUP("Directional Shadow", "directional_shadow_");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "directional_shadow_mode", PROPERTY_HINT_ENUM, "Orthogonal (Fast),PSSM 2 Splits (Average),PSSM 4 Splits (Slow)"), "set_shadow_mode", "get_shadow_mode");
 	ADD_PROPERTYI(PropertyInfo(Variant::FLOAT, "directional_shadow_split_1", PROPERTY_HINT_RANGE, "0,1,0.001"), "set_param", "get_param", PARAM_SHADOW_SPLIT_1_OFFSET);
@@ -597,6 +625,8 @@ void DirectionalLight3D::_bind_methods() {
 	ADD_PROPERTYI(PropertyInfo(Variant::FLOAT, "directional_shadow_fade_start", PROPERTY_HINT_RANGE, "0,1,0.001"), "set_param", "get_param", PARAM_SHADOW_FADE_START);
 	ADD_PROPERTYI(PropertyInfo(Variant::FLOAT, "directional_shadow_max_distance", PROPERTY_HINT_RANGE, "0,8192,0.1,or_greater,exp"), "set_param", "get_param", PARAM_SHADOW_MAX_DISTANCE);
 	ADD_PROPERTYI(PropertyInfo(Variant::FLOAT, "directional_shadow_pancake_size", PROPERTY_HINT_RANGE, "0,1024,0.1,or_greater,exp"), "set_param", "get_param", PARAM_SHADOW_PANCAKE_SIZE);
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "directional_shadow_cache_from_split", PROPERTY_HINT_RANGE, "0,3,1"), "set_shadow_cache_from_split", "get_shadow_cache_from_split");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "directional_shadow_cache_margin", PROPERTY_HINT_RANGE, "0.01,1,0.01"), "set_shadow_cache_margin", "get_shadow_cache_margin");
 
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "sky_mode", PROPERTY_HINT_ENUM, "Light and Sky,Light Only,Sky Only"), "set_sky_mode", "get_sky_mode");
 

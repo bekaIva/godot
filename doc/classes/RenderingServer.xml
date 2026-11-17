@@ -2145,12 +2145,28 @@
 				Sets the shadow mode for this directional light. Equivalent to [member DirectionalLight3D.directional_shadow_mode].
 			</description>
 		</method>
+		<method name="light_directional_set_shadow_cache">
+			<return type="void" />
+			<param index="0" name="light" type="RID" />
+			<param index="1" name="from_split" type="int" />
+			<param index="2" name="margin" type="float" />
+			<description>
+				Keeps the directional light's shadow splits from [param from_split] on from frame to frame, reaching [param margin] farther than their farthest point; [code]0[/code] keeps none. Equivalent to [member DirectionalLight3D.directional_shadow_cache_from_split] and [member DirectionalLight3D.directional_shadow_cache_margin].
+			</description>
+		</method>
 		<method name="light_directional_set_sky_mode">
 			<return type="void" />
 			<param index="0" name="light" type="RID" />
 			<param index="1" name="mode" type="int" enum="RenderingServer.LightDirectionalSkyMode" />
 			<description>
 				If [code]true[/code], this light will not be used for anything except sky shaders. Use this for lights that impact your sky shader that you may want to hide from affecting the rest of the scene. For example, you may want to enable this when the sun in your sky shader falls below the horizon.
+			</description>
+		</method>
+		<method name="light_directional_update_shadow_cache">
+			<return type="void" />
+			<param index="0" name="light" type="RID" />
+			<description>
+				Draws the directional light's kept shadow splits again on the next frame. Equivalent to [method DirectionalLight3D.update_shadow_cache].
 			</description>
 		</method>
 		<method name="light_omni_set_shadow_mode">

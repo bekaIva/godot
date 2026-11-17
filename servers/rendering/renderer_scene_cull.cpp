@@ -528,6 +528,9 @@ void RendererSceneCull::scenario_add_viewport_visibility_mask(RID p_scenario, RI
 void RendererSceneCull::_instance_queue_update(Instance *p_instance, bool p_update_aabb, bool p_update_dependencies) const {
 	if (p_update_aabb) {
 		p_instance->update_aabb = true;
+		// Moved or changed shape: not still for the shadow caches.
+		p_instance->shadow_cache_changed_frame = RSG::rasterizer->get_frame_number();
+		_shadow_cache_instance_changed(p_instance);
 	}
 	if (p_update_dependencies) {
 		p_instance->update_dependencies = true;
@@ -1003,6 +1006,23 @@ void RendererSceneCull::instance_set_transform(RID p_instance, const Transform3D
 #endif
 	instance->transform = p_transform;
 	_instance_queue_update(instance, true);
+}
+
+void RendererSceneCull::light_directional_set_shadow_cache(RID p_light, int p_from_split, float p_margin) {
+	if (p_from_split <= 0) {
+		shadow_cache_settings.erase(p_light);
+		return;
+	}
+	ShadowCacheSettings &settings = shadow_cache_settings[p_light];
+	settings.from_split = MIN(p_from_split, RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES - 1);
+	settings.margin = MAX(p_margin, 0.01f);
+}
+
+void RendererSceneCull::light_directional_update_shadow_cache(RID p_light) {
+	ShadowCacheSettings *settings = shadow_cache_settings.getptr(p_light);
+	if (settings) {
+		settings->requests++;
+	}
 }
 
 void RendererSceneCull::instance_attach_object_instance_id(RID p_instance, ObjectID p_id) {
@@ -1918,6 +1938,15 @@ void RendererSceneCull::_unpair_instance(Instance *p_instance) {
 		return; //nothing to do
 	}
 
+	// Hidden, freed or taken out of the scenario: its shadow stays in a cache
+	// until it is baked again (by the camera nearing its edge or on request),
+	// rather than every cache being baked again whenever anything goes away (a
+	// world streaming in cells round the camera frees some every few frames);
+	// shown again, it counts as not drawn into one.
+	for (uint32_t &bake : p_instance->shadow_cache_bake) {
+		bake = 0;
+	}
+
 	while (p_instance->pairs.first()) {
 		InstancePair *pair = p_instance->pairs.first()->self();
 		Instance *other_instance = p_instance == pair->a ? pair->b : pair->a;
@@ -2143,7 +2172,7 @@ void RendererSceneCull::_update_instance_lightmap_captures(Instance *p_instance)
 	geom->geometry_instance->set_lightmap_capture(p_instance->lightmap_sh.ptr());
 }
 
-void RendererSceneCull::_light_instance_setup_directional_shadow(int p_shadow_index, Instance *p_instance, const Transform3D p_cam_transform, const Projection &p_cam_projection, bool p_cam_orthogonal, bool p_cam_vaspect) {
+void RendererSceneCull::_light_instance_setup_directional_shadow(int p_shadow_index, Instance *p_instance, const Transform3D p_cam_transform, const Projection &p_cam_projection, bool p_cam_orthogonal, bool p_cam_vaspect, bool p_cache_allowed) {
 	// For later tight culling, the light culler needs to know the details of the directional light.
 	light_culler->prepare_directional_light(p_instance, p_shadow_index);
 
@@ -2189,6 +2218,22 @@ void RendererSceneCull::_light_instance_setup_directional_shadow(int p_shadow_in
 	real_t texture_size = RSG::light_storage->get_directional_light_shadow_size(light->instance);
 
 	bool overlap = RSG::light_storage->light_directional_get_blend_splits(p_instance->base);
+
+	// Cascades kept from frame to frame (light_directional_set_shadow_cache),
+	// from this split on; baked again on request, when anything drawn into
+	// them changed, or when the camera nears their edge.
+	int cache_from = 0;
+	real_t cache_margin = 0.2;
+	bool cache_rebake = false;
+	if (p_cache_allowed && !p_cam_orthogonal) {
+		const ShadowCacheSettings *settings = shadow_cache_settings.getptr(p_instance->base);
+		if (settings && settings->from_split < splits) {
+			cache_from = settings->from_split;
+			cache_margin = settings->margin;
+			cache_rebake = shadow_cache_dirty || settings->requests != light->shadow_cache_requests_seen;
+			light->shadow_cache_requests_seen = settings->requests;
+		}
+	}
 
 	cull.shadow_count = p_shadow_index + 1;
 	cull.shadows[p_shadow_index].cascade_count = splits;
@@ -2361,6 +2406,83 @@ void RendererSceneCull::_light_instance_setup_directional_shadow(int p_shadow_in
 			cull.shadows[p_shadow_index].cascades[i].range_begin = z_max - z_vec.dot(p_cam_transform.origin);
 			cull.shadows[p_shadow_index].cascades[i].uv_scale = uv_scale;
 		}
+
+		Cull::Shadow::Cascade &cascade = cull.shadows[p_shadow_index].cascades[i];
+		cascade.cache_mode = RendererSceneRender::DIRECTIONAL_SHADOW_CACHE_NONE;
+		cascade.cache_bake_id = 0;
+		InstanceLightData::ShadowCacheCascade &cache = light->shadow_cache[i];
+		if (cache_from == 0 || i < cache_from) {
+			cache.valid = false;
+			continue;
+		}
+
+		// A cached cascade is drawn round the camera's place rather than its
+		// view, so turning the camera keeps it: a sphere reaching past the
+		// cascade's farthest point from the camera by the margin.
+		const Vector3 eye = p_cam_transform.origin;
+		real_t reach = 0;
+		for (int j = 0; j < 8; j++) {
+			reach = MAX(reach, eye.distance_to(endpoints[j]));
+		}
+		if (!cache.valid || cache_rebake || cache.texture_size != int(texture_size) || cache.splits != splits || eye.distance_to(cache.center) + reach > cache.radius) {
+			print_verbose(vformat("Directional shadow cache: split %d baked (%s).", i + 1, !cache.valid ? "new" : cache_rebake ? (shadow_cache_dirty ? "something in it changed" : "requested") : eye.distance_to(cache.center) + reach > cache.radius ? "camera near its edge" : "size changed"));
+			cache.valid = true;
+			cache.bake_id = ++shadow_cache_bake_counter;
+			if (cache.bake_id == 0) {
+				cache.bake_id = ++shadow_cache_bake_counter;
+			}
+			cache.center = eye;
+			cache.radius = reach * (1.0 + cache_margin);
+			cache.texture_size = int(texture_size);
+			cache.splits = splits;
+
+			// As above, round the sphere, with the light as it is now.
+			real_t radius = cache.radius * texture_size / (texture_size - 2.0);
+			real_t z_min_cache = z_vec.dot(eye) - radius;
+			real_t z_max_cache = z_vec.dot(eye) + radius + pancake_size;
+			real_t soft_shadow_expand = 0;
+			float soft_shadow_angle = RSG::light_storage->light_get_param(p_instance->base, RSE::LIGHT_PARAM_SIZE);
+			if (soft_shadow_angle > 0.0) {
+				soft_shadow_expand = Math::tan(Math::deg_to_rad(soft_shadow_angle)) * (z_max_cache - z_min_cache);
+			}
+			const real_t unit = (radius + soft_shadow_expand) * 4.0 / texture_size;
+			real_t x_max_cache = Math::snapped(x_vec.dot(eye) + radius + soft_shadow_expand, unit);
+			real_t x_min_cache = Math::snapped(x_vec.dot(eye) - radius - soft_shadow_expand, unit);
+			real_t y_max_cache = Math::snapped(y_vec.dot(eye) + radius + soft_shadow_expand, unit);
+			real_t y_min_cache = Math::snapped(y_vec.dot(eye) - radius - soft_shadow_expand, unit);
+
+			cache.frustum_planes.resize(6);
+			cache.frustum_planes.write[0] = Plane(x_vec, x_max_cache);
+			cache.frustum_planes.write[1] = Plane(-x_vec, -x_min_cache);
+			cache.frustum_planes.write[2] = Plane(y_vec, y_max_cache);
+			cache.frustum_planes.write[3] = Plane(-y_vec, -y_min_cache);
+			cache.frustum_planes.write[4] = Plane(z_vec, z_max_cache + 1e6);
+			cache.frustum_planes.write[5] = Plane(-z_vec, -z_min_cache);
+
+			real_t half_x = (x_max_cache - x_min_cache) * 0.5;
+			real_t half_y = (y_max_cache - y_min_cache) * 0.5;
+			cache.projection.set_orthogonal(-half_x, half_x, -half_y, half_y, 0, z_max_cache - z_min_cache);
+			cache.transform.basis = transform.basis;
+			cache.transform.origin = x_vec * (x_min_cache + half_x) + y_vec * (y_min_cache + half_y) + z_vec * z_max_cache;
+			cache.zfar = z_max_cache - z_min_cache;
+			cache.shadow_texel_size = radius * 2.0 / texture_size;
+			cache.bias_scale = z_max_cache - z_min_cache;
+			cache.range_begin = z_max_cache;
+			cache.uv_scale = Vector2(1.0 / (x_max_cache - x_min_cache), 1.0 / (y_max_cache - y_min_cache));
+			cascade.cache_mode = RendererSceneRender::DIRECTIONAL_SHADOW_CACHE_DRAW;
+		} else {
+			cascade.cache_mode = RendererSceneRender::DIRECTIONAL_SHADOW_CACHE_REUSE;
+		}
+		cascade.cache_bake_id = cache.bake_id;
+		cascade.frustum = Frustum(cache.frustum_planes);
+		cascade.projection = cache.projection;
+		cascade.transform = cache.transform;
+		cascade.zfar = cache.zfar;
+		cascade.shadow_texel_size = cache.shadow_texel_size;
+		cascade.bias_scale = cache.bias_scale;
+		// Measured from the camera as it is now, along the cache's light.
+		cascade.range_begin = cache.range_begin - cache.transform.basis.get_column(Vector3::AXIS_Z).normalized().dot(eye);
+		cascade.uv_scale = cache.uv_scale;
 	}
 }
 
@@ -3239,6 +3361,26 @@ void RendererSceneCull::_scene_cull(CullData &cull_data, InstanceCullResult &cul
 
 			for (uint32_t j = 0; j < cull_data.cull->shadow_count; j++) {
 				for (uint32_t k = 0; k < cull_data.cull->shadows[j].cascade_count; k++) {
+					const Cull::Shadow::Cascade &cascade = cull_data.cull->shadows[j].cascades[k];
+					if (cascade.cache_mode != RendererSceneRender::DIRECTIONAL_SHADOW_CACHE_NONE) {
+						// A cached cascade covers more than the camera sees: no tight culling.
+						if (IN_FRUSTUM(cascade.frustum) && VIS_CHECK) {
+							uint32_t base_type = idata.flags & InstanceData::FLAG_BASE_TYPE_MASK;
+							if (((1 << base_type) & RSE::INSTANCE_GEOMETRY_MASK) && idata.flags & InstanceData::FLAG_CAST_SHADOWS && (LAYER_CHECK & cull_data.cull->shadows[j].caster_mask)) {
+								Instance *instance = idata.instance;
+								if (cascade.cache_mode == RendererSceneRender::DIRECTIONAL_SHADOW_CACHE_DRAW && cull_data.frame > instance->shadow_cache_changed_frame + SHADOW_CACHE_SETTLE_FRAMES) {
+									// Still for a while: drawn into the cache.
+									instance->shadow_cache_bake[k] = cascade.cache_bake_id;
+									cull_result.directional_shadows[j].cascade_cache_instances[k].push_back(idata.instance_geometry);
+								} else if (instance->shadow_cache_bake[k] != cascade.cache_bake_id) {
+									// Moving, or not in the cache yet: drawn over it every frame.
+									cull_result.directional_shadows[j].cascade_geometry_instances[k].push_back(idata.instance_geometry);
+								}
+								mesh_visible = true;
+							}
+						}
+						continue;
+					}
 					if (!light_culler->cull_directional_light(cull_data.scenario->instance_aabbs[i], j, k)) { // pass the cascade index
 						continue;
 					}
@@ -3384,7 +3526,10 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 		RSG::light_storage->set_directional_shadow_count(lights_with_shadow.size());
 
 		for (int i = 0; i < lights_with_shadow.size(); i++) {
-			_light_instance_setup_directional_shadow(i, lights_with_shadow[i], p_camera_data->main_transform, p_camera_data->main_projection, p_camera_data->is_orthogonal, p_camera_data->vaspect);
+			_light_instance_setup_directional_shadow(i, lights_with_shadow[i], p_camera_data->main_transform, p_camera_data->main_projection, p_camera_data->is_orthogonal, p_camera_data->vaspect, p_reflection_probe.is_null() && scene_render->directional_shadow_cache_is_supported());
+		}
+		if (p_reflection_probe.is_null()) {
+			shadow_cache_dirty = false;
 		}
 	}
 
@@ -3431,6 +3576,7 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 		cull_data.occlusion_buffer = RendererSceneOcclusionCull::get_singleton()->buffer_get_ptr(p_viewport);
 		cull_data.camera_matrix = &p_camera_data->main_projection;
 		cull_data.visibility_viewport_mask = scenario->viewport_visibility_masks.has(p_viewport) ? scenario->viewport_visibility_masks[p_viewport] : 0;
+		cull_data.frame = RSG::rasterizer->get_frame_number();
 #ifdef DEBUG_CULL_TIME
 		uint64_t time_from = OS::get_singleton()->get_ticks_usec();
 #endif
@@ -3488,6 +3634,8 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 				render_shadow_data[max_shadows_used].light = cull.shadows[i].light_instance;
 				render_shadow_data[max_shadows_used].pass = j;
 				render_shadow_data[max_shadows_used].instances.merge_unordered(scene_cull_result.directional_shadows[i].cascade_geometry_instances[j]);
+				render_shadow_data[max_shadows_used].cache_mode = c.cache_mode;
+				render_shadow_data[max_shadows_used].cache_instances.merge_unordered(scene_cull_result.directional_shadows[i].cascade_cache_instances[j]);
 				max_shadows_used++;
 			}
 		}
@@ -3711,6 +3859,8 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 
 	for (uint32_t i = 0; i < max_shadows_used; i++) {
 		render_shadow_data[i].instances.clear();
+		render_shadow_data[i].cache_instances.clear();
+		render_shadow_data[i].cache_mode = RendererSceneRender::DIRECTIONAL_SHADOW_CACHE_NONE;
 	}
 	max_shadows_used = 0;
 
@@ -4501,6 +4651,7 @@ RendererSceneCull::RendererSceneCull() {
 
 	for (uint32_t i = 0; i < MAX_UPDATE_SHADOWS; i++) {
 		render_shadow_data[i].instances.set_page_pool(&geometry_instance_cull_page_pool);
+		render_shadow_data[i].cache_instances.set_page_pool(&geometry_instance_cull_page_pool);
 	}
 	for (uint32_t i = 0; i < SDFGI_MAX_CASCADES * SDFGI_MAX_REGIONS_PER_CASCADE; i++) {
 		render_sdfgi_data[i].instances.set_page_pool(&geometry_instance_cull_page_pool);
@@ -4532,6 +4683,7 @@ RendererSceneCull::~RendererSceneCull() {
 
 	for (uint32_t i = 0; i < MAX_UPDATE_SHADOWS; i++) {
 		render_shadow_data[i].instances.reset();
+		render_shadow_data[i].cache_instances.reset();
 	}
 	for (uint32_t i = 0; i < SDFGI_MAX_CASCADES * SDFGI_MAX_REGIONS_PER_CASCADE; i++) {
 		render_sdfgi_data[i].instances.reset();
