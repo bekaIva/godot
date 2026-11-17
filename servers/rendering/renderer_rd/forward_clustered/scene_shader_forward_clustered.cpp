@@ -866,6 +866,8 @@ void SceneShaderForwardClustered::init(const String p_defines) {
 		actions.render_mode_defines["cull_disabled"] = "#define DO_SIDE_CHECK\n";
 		actions.render_mode_defines["particle_trails"] = "#define USE_PARTICLE_TRAILS\n";
 		actions.render_mode_defines["depth_prepass_alpha"] = "#define USE_OPAQUE_PREPASS\n";
+		actions.render_mode_defines["depth_conservative_farther"] = "#define DEPTH_CONSERVATIVE_FARTHER\n";
+		actions.render_mode_defines["depth_conservative_nearer"] = "#define DEPTH_CONSERVATIVE_NEARER\n";
 
 		bool force_lambert = GLOBAL_GET("rendering/shading/overrides/force_lambert_over_burley");
 

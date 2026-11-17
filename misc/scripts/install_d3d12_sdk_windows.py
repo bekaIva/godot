@@ -35,7 +35,7 @@ else:
 # Check for latest version: https://github.com/godotengine/godot-nir-static/releases/latest
 # Our fork adds patches on top of Godot's release (see its godot-patches folder).
 mesa_repository = "bekaIva/godot-nir-static"
-mesa_version = "25.3.1-3-patina.1"
+mesa_version = "25.3.1-3-patina.2"
 # WinPixEventRuntime
 # Check for latest version: https://www.nuget.org/api/v2/package/WinPixEventRuntime (check downloaded filename)
 pix_version = "1.0.240308001"

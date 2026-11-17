@@ -1026,6 +1026,18 @@ layout(location = 0) out vec4 frag_color;
 
 #endif // RENDER DEPTH
 
+// A shader that writes DEPTH but only ever moves it away from the camera
+// (depth_conservative_farther) or toward it (depth_conservative_nearer) says
+// so, and the GPU keeps testing depth before running the fragment shader.
+// Otherwise a written depth turns that early test off, and every hidden
+// fragment runs the whole shader before the test throws it away. Reversed Z:
+// farther is less.
+#if defined(DEPTH_CONSERVATIVE_FARTHER)
+layout(depth_less) out float gl_FragDepth;
+#elif defined(DEPTH_CONSERVATIVE_NEARER)
+layout(depth_greater) out float gl_FragDepth;
+#endif
+
 #include "../scene_forward_aa_inc.glsl"
 
 #if !defined(MODE_RENDER_DEPTH) && !defined(MODE_UNSHADED) // && !defined(USE_VERTEX_LIGHTING)
